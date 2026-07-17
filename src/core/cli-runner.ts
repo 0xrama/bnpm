@@ -117,16 +117,23 @@ function selectCommand(invocation: Invocation): string {
   return invocation.kind;
 }
 
+function presentFailure(output: Output, json: boolean, result: CommandResult): void {
+  if (json) {
+    output.error(result.summary, { category: result.category, exitCode: result.exitCode });
+  }
+  output.result(result);
+}
+
 export async function runCli(options: RunCliOptions): Promise<number> {
   const invokedAsBnpmx = executableIsBnpmx(options.executableName ?? process.argv[1] ?? "bnpm");
   let invocation: Invocation;
   try {
     invocation = parseInvocation(options.args, invokedAsBnpmx);
   } catch (error) {
-    const output = createOutput(requestsJson(options.args, invokedAsBnpmx), invokedAsBnpmx ? "bnpmx" : "bnpm");
+    const json = requestsJson(options.args, invokedAsBnpmx);
+    const output = createOutput(json, invokedAsBnpmx ? "bnpmx" : "bnpm");
     const result = mapError(error);
-    output.error(result.summary, { category: result.category, exitCode: result.exitCode });
-    output.result(result);
+    presentFailure(output, json, result);
     return result.exitCode;
   }
 
@@ -184,8 +191,7 @@ export async function runCli(options: RunCliOptions): Promise<number> {
     return result.exitCode;
   } catch (error) {
     const result = cancellation === undefined ? mapError(error) : failureResult("cancelled", cancellation, "Cancelled");
-    output.error(result.summary, { category: result.category, exitCode: result.exitCode });
-    output.result(result);
+    presentFailure(output, isJson, result);
     return result.exitCode;
   } finally {
     process.removeListener("SIGINT", onSignal);

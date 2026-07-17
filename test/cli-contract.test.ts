@@ -195,6 +195,13 @@ test("JSON failures are versioned, final, and isolated to stdout", async () => {
   assert.equal(events.at(-1)?.data instanceof Object, true);
 });
 
+test("human failures emit one concise terminal diagnostic", async () => {
+  const result = await execute(cli, ["publish"]);
+  assert.equal(result.code, 2);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "Usage: unknown command: publish\n");
+});
+
 test("typed child output is sanitized and emits only protocol data in JSON mode", async () => {
   const source = [
     `import { runCli } from ${JSON.stringify(runner)};`,
