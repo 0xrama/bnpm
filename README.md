@@ -4,6 +4,14 @@ Better NPM (`bnpm`) is an npm-compatible package manager designed for fast insta
 
 > Better NPM has a functional alpha command surface. It is not production-qualified yet; review the limitations below before using it for critical projects.
 
+## Install
+
+```sh
+npm install --global @0xrama/bnpm
+```
+
+This installs both the `bnpm` and `bnpmx` commands.
+
 ## Commands
 
 - `bnpm install [spec...]` resolves and installs dependencies with bounded resolve, fetch/cache, byte-download, inspection, and linking progress; explicit specs are saved by default. Lockfile-only, non-mutating dry-run, and dev/optional/peer omit/include modes are supported.

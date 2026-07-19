@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@integrofy/bnpm",
+      "name": "@0xrama/bnpm",
       "dependencies": {
         "node-gyp": "13.0.1",
         "npm-package-arg": "13.0.2",

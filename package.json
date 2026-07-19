@@ -1,19 +1,22 @@
 {
-  "name": "@integrofy/bnpm",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@0xrama/bnpm",
+  "version": "0.0.1",
   "description": "A fast, security-focused npm-compatible package manager",
   "type": "module",
   "bin": {
-    "bnpm": "./dist/src/cli.js",
-    "bnpmx": "./dist/src/cli.js"
+    "bnpm": "dist/src/cli.js",
+    "bnpmx": "dist/src/cli.js"
   },
   "files": [
-    "dist",
+    "dist/src",
+    "dist/package.json",
     "README.md"
   ],
   "engines": {
     "node": ">=22.22.2"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
