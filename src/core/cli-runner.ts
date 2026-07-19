@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import packageMetadata from "../../package.json" with { type: "json" };
-import { runCommand, type CommandContext } from "../commands/index.js";
+import { runBnpmxCommand, runCommand, type CommandContext } from "../commands/index.js";
 import { ExitCode, type ExitCode as ExitCodeValue } from "./exit-codes.js";
 import { parseInvocation, UsageError, type Invocation } from "./cli-parser.js";
 import { createOutput, type CommandResult, type Output, type ResultCategory, type ResultStatus } from "./output.js";
@@ -41,6 +41,8 @@ function resultForExitCode(exitCode: number, summary: string): CommandResult {
             ? "integrity"
             : exitCode === ExitCode.networkFailure
               ? "network"
+              : exitCode === ExitCode.resolutionFailure
+                ? "resolution"
               : exitCode === ExitCode.installIncomplete
                 ? "incomplete"
                 : exitCode === ExitCode.sigint || exitCode === ExitCode.sigterm
@@ -49,6 +51,16 @@ function resultForExitCode(exitCode: number, summary: string): CommandResult {
   const status: ResultStatus =
     category === "success" ? "success" : category === "incomplete" ? "incomplete" : category === "cancelled" ? "cancelled" : "failure";
   return { status, category, exitCode, summary };
+}
+
+function summaryForCommand(command: string, exitCode: number): string {
+  if (exitCode === ExitCode.success) return "Completed";
+  if (exitCode === ExitCode.policyBlocked) return "Blocked by security policy";
+  if (exitCode === ExitCode.integrityFailure) return "Package integrity or archive verification failed";
+  if (exitCode === ExitCode.networkFailure) return "Registry or network request failed";
+  if (exitCode === ExitCode.resolutionFailure) return "Dependency resolution failed";
+  if (exitCode === ExitCode.installIncomplete) return "Installation completed with skipped lifecycle scripts";
+  return `${command} failed`;
 }
 
 export function mapError(error: unknown): CommandResult {
@@ -63,45 +75,101 @@ export function mapError(error: unknown): CommandResult {
 
 function help(invokedAsBnpmx: boolean): string {
   if (invokedAsBnpmx) {
-    return "Usage: bnpmx [--json] [--allow-recent=name@version] [--allow-dangerous=name@version] <package> [-- args...]\n\nResolve, inspect, and execute one package in an isolated temporary project.";
+    return "Usage: bnpmx [--json] [--details] [--allow-recent=name@version] [--allow-dangerous=name@version] <package> [-- args...]\n       bnpmx [--json] [--details] check\n\nResolve, inspect, and execute one package, or check every direct and transitive package in the current project.";
   }
   return [
     "Usage: bnpm [global options] <command> [options] [operands]",
     "",
     "Commands:",
     "  install [spec...]                 Install manifest dependencies or package specs",
+    "  ci                                Install exactly from bnpm-lock.yaml",
     "  add <spec...>                     Add package dependencies",
-    "  remove <name...>                  Remove direct dependencies",
-    "  run <script> [-- args...]         Analyze and run a project script",
-    "  exec <bin> [-- args...]           Execute an installed binary",
-    "  audit                             Run registry and local security audits",
+    "  remove <name...>                  Remove direct dependencies (aliases: uninstall, rm)",
+    "  update [name...]                  Resolve newer versions within declared ranges",
+    "  outdated [name...]                Report current, wanted, and latest versions",
+    "  list [name...]                    Show the installed dependency graph (alias: ls)",
+    "  why <name>                        Explain why a package is installed",
+    "  query <selector>                  Query the verified dependency graph with npm selectors",
+    "  diff [package@version]            Emit verified package patches; --diff may be used twice",
+    "  find-dupes                       Report duplicate package instances without mutation",
+    "  bin                               Print the local or global executable directory",
+    "  prefix                            Print the local or global installation prefix",
+    "  root                              Print the local or global node_modules directory",
+    "  run [--workspaces] <script> ...   Analyze and run a project or workspace script",
+    "  test / start / stop / restart     npm-compatible project script aliases",
+    "  install-test / install-ci-test    Install (or CI install), then run test",
+    "  exec [--package <spec>] <bin> ... Execute an installed or ephemeral binary",
+    "  explore <package> [-- command]    Run a command inside an installed package",
+    "  edit <package>                    Edit a project-local installed package safely",
+    "  audit [fix [--dry-run]]           Report advisories or apply safe in-range fixes",
+    "  pack [directory]                  Create a deterministic npm package tarball",
+    "  publish [directory]               Publish a verified package tarball",
+    "  stage <publish|list|view|download|approve|reject> ...  Manage staged publication",
+    "  unpublish <package@version>       Remove an exact registry version (--force for last)",
+    "  access ... / owner ...            Manage package visibility, teams, and owners",
+    "  token <create|list|revoke> ...    Create, list, or revoke authentication tokens",
+    "  star / unstar / stars             Manage registry package favorites",
+    "  org ... / team ...                Manage registry organizations and teams",
+    "  profile <get|set|enable-2fa|disable-2fa> ...  Manage registry profile security",
+    "  trust <github|gitlab|circleci|list|revoke> ...  Manage trusted publishers",
+    "  login                             Log in via web or explicit legacy flow (alias: adduser)",
+    "  logout                            Revoke and remove the current registry token",
+    "  whoami                            Display the current registry username",
+    "  view <package>                    Show package metadata (alias: info)",
+    "  search <terms...>                 Search registry packages",
+    "  repo / docs / bugs [package]      Open validated package project links",
+    "  dist-tag <add|rm|ls> ...          Manage package distribution tags",
+    "  deprecate <package@range> <msg>   Deprecate matching package versions",
+    "  config <list|get|set|delete> ...  Manage safe user configuration",
+    "  init [initializer] ...            Create package.json or run an inspected create-* package",
+    "  version [release|version]        Show or update the package version",
+    "  shrinkwrap                       Export the verified graph as npm-shrinkwrap.json",
+    "  prune                             Remove packages not declared by the project",
+    "  dedupe                            Re-resolve and converge compatible package instances",
+    "  rebuild [name...]                 Rerun exactly approved dependency build scripts",
+    "  install-scripts <approve|deny|ls|prune> ...  Manage exact lifecycle approvals",
+    "  approve-scripts / deny-scripts    Mutate exact lockfile-bound lifecycle approvals",
+    "  fund                              Show validated funding links for installed packages",
+    "  cache <add|ls|verify|clean>       Prefetch, inspect, verify, or clean bnpm caches",
+    "  ping                              Check registry routing and authentication",
+    "  doctor                            Diagnose Node, Git, registry, and cache health",
+    "  completion                        Print bash/zsh command completion",
+    "  pkg <get|set|delete> ...          Read or transactionally update package.json",
+    "  sbom [--sbom-format=<format>]     Generate CycloneDX or SPDX from the lockfile",
+    "  link [name...] / unlink [name...] Register or consume live package links",
     "  bnpmx <package> [-- args...]      Resolve and execute an ephemeral package",
+    "  i                                 Alias for install",
     "",
     "Global options:",
-    "  -h, --help  -v, --version  --json",
+    "  -h, --help  -v, --version  --json  --details  --registry=https://registry.example/",
     "  --allow-recent=name@version  --allow-dangerous=name@version",
     "",
     "Install options:",
-    "  --frozen-lockfile  --offline  --omit=dev",
+    "  -g, --global  --frozen-lockfile  --offline  --omit=dev",
     "  --save-prod  -D, --save-dev  -O, --save-optional  --save-peer",
     "  -E, --save-exact  --no-save",
+    "",
+    "Package authoring options:",
+    "  --dry-run  --pack-destination=<directory>",
+    "  --tag=<tag>  --access=<public|restricted>  --otp=<code>",
+    "  --provenance  --provenance-file=<path>",
   ].join("\n");
 }
 
 function defaultRunner(context: CommandExecutionContext): Promise<CommandResult> {
   if (context.invocation.kind === "bnpmx") {
-    return Promise.resolve(
-      failureResult("internal", ExitCode.internalError, "bnpmx is not implemented yet"),
+    return runBnpmxCommand(context, context.invocation.options, context.invocation.specifier, context.invocation.targetArgs).then((exitCode) =>
+      resultForExitCode(exitCode, summaryForCommand("bnpmx", exitCode)),
     );
   }
   if (context.invocation.kind !== "command") {
     return Promise.resolve({ status: "success", category: "success", exitCode: ExitCode.success, summary: "Completed" });
   }
   const commandName = context.invocation.name;
-  return runCommand(commandName, context).then((exitCode) =>
+  return runCommand(commandName, { ...context, options: context.invocation.options }).then((exitCode) =>
     resultForExitCode(
       exitCode === ExitCode.usage ? ExitCode.internalError : exitCode,
-      exitCode === ExitCode.success ? "Completed" : `${commandName} is not implemented yet`,
+      summaryForCommand(commandName, exitCode),
     ),
   );
 }
@@ -187,7 +255,8 @@ export async function runCli(options: RunCliOptions): Promise<number> {
   });
   try {
     const result = await Promise.race([run, cancelled]);
-    output.result(result);
+    const directHumanExecution = !isJson && result.status === "success" && (invocation.kind === "bnpmx" || (invocation.kind === "command" && invocation.name === "exec"));
+    if (!directHumanExecution) output.result(result);
     return result.exitCode;
   } catch (error) {
     const result = cancellation === undefined ? mapError(error) : failureResult("cancelled", cancellation, "Cancelled");
@@ -205,11 +274,11 @@ function requestsJson(args: readonly string[], invokedAsBnpmx: boolean): boolean
     if (argument === "--json") {
       return true;
     }
-    if (argument === "--allow-recent" || argument === "--allow-dangerous") {
+    if (argument === "--allow-recent" || argument === "--allow-dangerous" || argument === "--registry") {
       index += 1;
       continue;
     }
-    if (argument?.startsWith("--allow-recent=") || argument?.startsWith("--allow-dangerous=")) {
+    if (argument?.startsWith("--allow-recent=") || argument?.startsWith("--allow-dangerous=") || argument?.startsWith("--registry=")) {
       continue;
     }
     if (argument === "--help" || argument === "-h" || argument === "--version" || argument === "-v") {

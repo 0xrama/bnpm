@@ -13,17 +13,22 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.22.2"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/test/*.test.js",
+    "benchmark": "npm run build && node scripts/benchmark.mjs",
+    "verify:package": "npm run build && node scripts/verify-package.mjs",
     "start": "node dist/src/cli.js"
   },
   "dependencies": {
     "npm-package-arg": "13.0.2",
+    "node-gyp": "13.0.1",
+    "npm-packlist": "11.3.0",
     "semver": "7.8.5",
+    "sigstore": "5.0.0",
     "tar-stream": "3.2.0",
     "yaml": "^2.9.0"
   },

@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { RegistryClient, RegistryError } from "../src/registry/client.js";
+
+test("requests full metadata for a scoped package", async () => {
+  let requestedUrl = "";
+  const fetchMock: typeof fetch = async (input) => {
+    requestedUrl = String(input);
+    return Response.json({ name: "@scope/example", "dist-tags": { latest: "1.0.0" }, versions: {} });
+  };
+
+  const client = new RegistryClient({ fetch: fetchMock });
+  const document = await client.packageDocument("@scope/example");
+  assert.equal(document.name, "@scope/example");
+  assert.match(requestedUrl, /%40scope%2Fexample$/i);
+});
+
+test("rejects invalid registry responses", async () => {
+  const fetchMock: typeof fetch = async () => Response.json({ error: "not a packument" });
+  const client = new RegistryClient({ fetch: fetchMock });
+  await assert.rejects(() => client.packageDocument("example"), RegistryError);
+});
+
+test("requires HTTPS registry transport", () => {
+  assert.throws(() => new RegistryClient({ registry: new URL("http://registry.example/") }), /HTTPS/);
+});
+
+test("bounds metadata bytes and HTTPS redirects", async () => {
+  const oversized = new RegistryClient({ maxMetadataBytes: 4, fetch: async () => new Response("12345") });
+  await assert.rejects(() => oversized.packageDocument("example"), /size limit/);
+  const redirected = new RegistryClient({ fetch: async () => new Response(null, { status: 302, headers: { location: "http://insecure.example/package" } }) });
+  await assert.rejects(() => redirected.packageDocument("example"), /HTTPS/);
+});

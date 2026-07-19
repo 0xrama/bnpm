@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { createBnpmPaths } from "../src/config/paths.js";
+import { linkPackages, registerLink, unregisterLink } from "../src/project/link.js";
+
+test("link registers and consumes a live package without replacing real directories", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bnpm-link-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, "source");
+  const project = join(root, "project");
+  await mkdir(source); await mkdir(project);
+  await writeFile(join(source, "package.json"), JSON.stringify({ name: "@scope/live", version: "1.0.0", bin: { live: "cli.js" } }));
+  await writeFile(join(source, "cli.js"), "#!/usr/bin/env node\n");
+  await writeFile(join(source, "value.txt"), "first");
+  await writeFile(join(project, "package.json"), JSON.stringify({ name: "consumer", version: "1.0.0" }));
+  const paths = createBnpmPaths({ cwd: project, home: root, temp: root, platform: "linux", environment: { HOME: root, BNPM_GLOBAL_HOME: join(root, "global") } });
+  assert.deepEqual(await registerLink({ cwd: source, paths }), { name: "@scope/live", target: await realpath(source) });
+  await linkPackages({ cwd: project, names: ["@scope/live"], paths });
+  const local = join(project, "node_modules", "@scope", "live");
+  assert.equal(await realpath(local), await realpath(source));
+  await writeFile(join(source, "value.txt"), "second");
+  assert.equal(await readFile(join(local, "value.txt"), "utf8"), "second");
+  assert.ok((await stat(join(project, "node_modules", ".bin", process.platform === "win32" ? "live.cmd" : "live"))).isFile());
+  assert.deepEqual(await unregisterLink({ cwd: project, names: ["@scope/live"], paths }), ["@scope/live"]);
+  await assert.rejects(stat(local), { code: "ENOENT" });
+  await mkdir(local, { recursive: true });
+  await assert.rejects(() => linkPackages({ cwd: project, names: ["@scope/live"], paths }), /refusing to replace non-link path/);
+  assert.ok((await stat(local)).isDirectory());
+  await rm(local, { recursive: true });
+  assert.deepEqual(await unregisterLink({ cwd: source, names: [], paths }), ["@scope/live"]);
+  await assert.rejects(stat(join(paths.globalRoot, "node_modules", "@scope", "live")), { code: "ENOENT" });
+});
+
+test("link refuses to overwrite an unrelated bin", async (t) => {
+  if (process.platform === "win32") return t.skip("POSIX symlink collision assertion");
+  const root = await mkdtemp(join(tmpdir(), "bnpm-link-bin-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, "source");
+  await mkdir(source);
+  await writeFile(join(source, "package.json"), JSON.stringify({ name: "live", version: "1.0.0", bin: "cli.js" }));
+  await writeFile(join(source, "cli.js"), "#!/usr/bin/env node\n");
+  const paths = createBnpmPaths({ cwd: source, home: root, temp: root, platform: "linux", environment: { HOME: root, BNPM_GLOBAL_HOME: join(root, "global") } });
+  await mkdir(paths.globalBin, { recursive: true });
+  await writeFile(join(paths.globalBin, "live"), "do not replace");
+  await assert.rejects(() => registerLink({ cwd: source, paths }), /owned by another package/);
+  assert.equal(await readFile(join(paths.globalBin, "live"), "utf8"), "do not replace");
+});

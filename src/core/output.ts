@@ -1,5 +1,5 @@
 export type ResultStatus = "success" | "failure" | "incomplete" | "cancelled";
-export type ResultCategory = "success" | "usage" | "policy" | "integrity" | "network" | "incomplete" | "internal" | "cancelled";
+export type ResultCategory = "success" | "usage" | "policy" | "integrity" | "network" | "resolution" | "incomplete" | "internal" | "cancelled";
 
 export interface CommandResult {
   readonly status: ResultStatus;
@@ -11,6 +11,7 @@ export interface CommandResult {
 }
 
 export interface Output {
+  readonly passthroughChildOutput?: boolean;
   info(message: string, details?: unknown): void;
   error(message: string, details?: unknown): void;
   childOutput(stream: "stdout" | "stderr", text: string, attribution?: { readonly package?: string; readonly stage?: string; readonly truncated?: boolean }): void;
@@ -93,6 +94,7 @@ export function createOutput(json: boolean, command: string): Output {
   }
 
   return {
+    passthroughChildOutput: !json,
     info(message, details) {
       if (json) {
         emit("info", { message: sanitizeText(message), ...(details === undefined ? {} : { data: sanitizeData(details) }) });

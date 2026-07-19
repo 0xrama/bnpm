@@ -5,6 +5,7 @@ export const ExitCode = {
   integrityFailure: 4,
   networkFailure: 5,
   installIncomplete: 6,
+  resolutionFailure: 7,
   internalError: 70,
   sigint: 130,
   sigterm: 143,
