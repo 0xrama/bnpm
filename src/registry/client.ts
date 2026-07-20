@@ -1,5 +1,13 @@
 import type { PackageDocument } from "./types.js";
 
+const defaultMaxMetadataBytes = 64 * 1024 * 1024;
+
+function metadataLimitMessage(name: string, limit: number): string {
+  const mebibyte = 1024 * 1024;
+  const formatted = limit % mebibyte === 0 ? `${limit / mebibyte} MiB` : `${limit} bytes`;
+  return `Registry metadata for ${name} exceeds the ${formatted} safety limit`;
+}
+
 export interface RegistryClientOptions {
   registry?: URL;
   fetch?: typeof globalThis.fetch;
@@ -32,7 +40,7 @@ export class RegistryClient {
   constructor(options: RegistryClientOptions = {}) {
     this.#registry = options.registry ?? new URL("https://registry.npmjs.org/");
     this.#fetch = options.fetch ?? globalThis.fetch;
-    this.#maxMetadataBytes = options.maxMetadataBytes ?? 32 * 1024 * 1024;
+    this.#maxMetadataBytes = options.maxMetadataBytes ?? defaultMaxMetadataBytes;
     this.#timeoutMilliseconds = options.timeoutMilliseconds ?? 30_000;
     this.#maxRedirects = options.maxRedirects ?? 5;
     this.#maxRetries = options.maxRetries ?? 2;
@@ -57,14 +65,14 @@ export class RegistryClient {
     }
     if (!response?.ok) throw new RegistryError(`Registry request for ${name} failed with ${response?.status ?? "no response"}`, response?.status);
     const declaredLength = Number(response.headers.get("content-length"));
-    if (Number.isFinite(declaredLength) && declaredLength > this.#maxMetadataBytes) throw new RegistryError(`Registry metadata for ${name} exceeds the size limit`);
+    if (Number.isFinite(declaredLength) && declaredLength > this.#maxMetadataBytes) throw new RegistryError(metadataLimitMessage(name, this.#maxMetadataBytes));
     if (!response.body) throw new RegistryError(`Registry returned an empty package document for ${name}`);
     const chunks: Buffer[] = [];
     let bytes = 0;
     for await (const value of response.body) {
       const chunk = Buffer.from(value);
       bytes += chunk.length;
-      if (bytes > this.#maxMetadataBytes) throw new RegistryError(`Registry metadata for ${name} exceeds the size limit`);
+      if (bytes > this.#maxMetadataBytes) throw new RegistryError(metadataLimitMessage(name, this.#maxMetadataBytes));
       chunks.push(chunk);
     }
     let value: unknown;

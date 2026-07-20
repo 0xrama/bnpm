@@ -27,7 +27,16 @@ test("requires HTTPS registry transport", () => {
 
 test("bounds metadata bytes and HTTPS redirects", async () => {
   const oversized = new RegistryClient({ maxMetadataBytes: 4, fetch: async () => new Response("12345") });
-  await assert.rejects(() => oversized.packageDocument("example"), /size limit/);
+  await assert.rejects(() => oversized.packageDocument("example"), /4 bytes safety limit/);
   const redirected = new RegistryClient({ fetch: async () => new Response(null, { status: 302, headers: { location: "http://insecure.example/package" } }) });
   await assert.rejects(() => redirected.packageDocument("example"), /HTTPS/);
+});
+
+test("default metadata budget accepts Vite-sized packuments and remains bounded", async () => {
+  const document = JSON.stringify({ name: "vite", "dist-tags": { latest: "1.0.0" }, versions: {} });
+  const accepted = new RegistryClient({ fetch: async () => new Response(document, { headers: { "content-length": String(39 * 1024 * 1024) } }) });
+  assert.equal((await accepted.packageDocument("vite")).name, "vite");
+
+  const rejected = new RegistryClient({ fetch: async () => new Response(document, { headers: { "content-length": String(65 * 1024 * 1024) } }) });
+  await assert.rejects(() => rejected.packageDocument("vite"), /64 MiB safety limit/);
 });

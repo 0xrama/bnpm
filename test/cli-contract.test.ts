@@ -121,7 +121,7 @@ test("help and version are side-effect-free through both executable names", asyn
   assertJsonProtocol(versionEvents);
   assert.equal(versionEvents.length, 1);
   assert.equal(versionEvents[0]?.type, "result");
-  assert.equal((versionEvents[0]?.data as { readonly summary?: unknown }).summary, "0.0.1");
+  assert.equal((versionEvents[0]?.data as { readonly summary?: unknown }).summary, "0.0.2");
 
   const bnpmx = await bnpmxExecutable("help");
   const bnpmxHelp = await execute(bnpmx, ["-h"]);

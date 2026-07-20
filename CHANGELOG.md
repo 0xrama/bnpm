@@ -18,6 +18,12 @@ All notable changes to Better NPM are recorded here. The project follows Semanti
 - Bounded network, metadata, archive, output, process, and filesystem operations across trust boundaries.
 - Credentials remain path-scoped, are recalculated on redirects, are removed from lifecycle environments, and are never persisted to the lockfile.
 
+## 0.0.2 - 2026-07-20
+
+### Fixed
+
+- Increased the bounded registry metadata budget from 32 MiB to 64 MiB so large packuments such as Vite resolve successfully while retaining a hard safety limit.
+
 ## 0.0.0
 
 Initial development version. No production release has been declared.

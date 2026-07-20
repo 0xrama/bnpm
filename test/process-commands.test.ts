@@ -105,7 +105,7 @@ test("project scripts receive npm-compatible lifecycle environment variables", a
   assert.equal(await runProjectScriptLifecycle(project, "inspect", [], new AbortController().signal, capture().output, new Set()), 0);
   const environment = JSON.parse(await readFile(join(project, "env.json"), "utf8"));
   assert.deepEqual({ event: environment.event, name: environment.name, version: environment.version, json: environment.json, init: environment.init, command: environment.command }, { event: "inspect", name: "script-environment", version: "2.3.4", json: join(project, "package.json"), init: project, command: "run-script" });
-  assert.match(environment.userAgent, /^bnpm\/0\.0\.1 node\//);
+  assert.match(environment.userAgent, /^bnpm\/0\.0\.2 node\//);
 });
 
 test("explore runs an exact command in an installed package directory", async () => {
