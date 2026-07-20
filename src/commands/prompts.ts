@@ -14,19 +14,20 @@ async function ask(question: string): Promise<string | undefined> {
 
 const yes = (value: string | undefined): boolean => value?.toLowerCase() === "y" || value?.toLowerCase() === "yes";
 
-export function commandInstallPrompts(options: CommandOptions): InstallPrompts {
+export function commandInstallPrompts(options: CommandOptions, beforePrompt: () => void = () => {}): InstallPrompts {
   const mode = detectInteractiveMode({ json: options.json, environment: process.env, stdinIsTTY: process.stdin.isTTY, stderrIsTTY: process.stderr.isTTY, promptAvailable: true });
+  const prompt = (question: string): Promise<string | undefined> => { beforePrompt(); return ask(question); };
   return {
     mode,
     ...(mode.interactive ? {
-      selectRecencyHours: () => ask("Choose recent-release warning window in hours [1/6/24] (default 1): "),
-      allowRecent: (decision: RecentReleaseDecision) => ask(`${decision.identity}: ${decision.reason}. Install this recently published package? [y/N] `).then(yes),
+      selectRecencyHours: () => prompt("Choose recent-release warning window in hours [1/6/24] (default 1): "),
+      allowRecent: (decision: RecentReleaseDecision) => prompt(`${decision.identity}: ${decision.reason}. Install this recently published package? [y/N] `).then(yes),
       allowDangerous: (analyzed: AnalyzedPackage) => {
         const identity = `${analyzed.analysis.packageName}@${analyzed.analysis.packageVersion}`;
         const rules = analyzed.analysis.findings.filter((finding) => finding.severity === "dangerous").map((finding) => finding.ruleId).join(", ");
-        return ask(`${identity} has dangerous findings (${rules}). Override and continue? [y/N] `).then(yes);
+        return prompt(`${identity} has dangerous findings (${rules}). Override and continue? [y/N] `).then(yes);
       },
-      approveLifecycle: (fact: LifecycleFact) => ask(
+      approveLifecycle: (fact: LifecycleFact) => prompt(
         `${fact.packageName}@${fact.packageVersion} wants to run ${fact.stage}: ${fact.command}\n` +
         "This command is NOT sandboxed and will run with your normal operating-system permissions. Approve once? [y/N] ",
       ).then(yes),

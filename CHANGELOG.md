@@ -18,6 +18,13 @@ All notable changes to Better NPM are recorded here. The project follows Semanti
 - Bounded network, metadata, archive, output, process, and filesystem operations across trust boundaries.
 - Credentials remain path-scoped, are recalculated on redirects, are removed from lifecycle environments, and are never persisted to the lockfile.
 
+## 0.0.3 - 2026-07-20
+
+### Changed
+
+- Install output now uses one in-place pnpm-style progress line with compact permanent progress and security summaries; detailed evidence remains available through `--details` and JSON output.
+- Lifecycle prompts clear active progress cleanly, and `--ignore-scripts` no longer asks about scripts that will not run.
+
 ## 0.0.2 - 2026-07-20
 
 ### Fixed

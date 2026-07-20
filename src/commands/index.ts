@@ -62,23 +62,28 @@ function selectedRegistry(options: GlobalOptions | undefined): { readonly regist
 }
 
 function installProgressReporter(context: CommandContext): (progress: InstallProgress) => void {
-  let lastPhase: InstallProgress["phase"] | undefined; let lastAt = 0; let lastBucket = -1;
+  let lastPhase: InstallProgress["phase"] | undefined; let lastAt = 0;
   return (progress) => {
     const now = Date.now(); const phaseChanged = progress.phase !== lastPhase; const completed = progress.completed ?? 0; const total = progress.total ?? 0;
-    const bucket = total > 0 ? Math.floor(completed * 10 / total) : 0;
+    const reused = progress.cached ?? 0; const downloaded = progress.downloaded ?? 0;
+    let message: string;
+    if (!phaseChanged && (progress.phase === "fetching" || progress.phase === "inspecting") && now - lastAt < 100 && completed !== total) return;
     if (progress.phase === "downloading") {
-      if (!phaseChanged && now - lastAt < 1000) return;
+      if (!phaseChanged && now - lastAt < 100) return;
       const bytes = progress.bytes ?? 0; const totalBytes = progress.totalBytes; const amount = totalBytes === undefined ? `${(bytes / 1024 / 1024).toFixed(1)} MiB` : `${(bytes / 1024 / 1024).toFixed(1)}/${(totalBytes / 1024 / 1024).toFixed(1)} MiB`;
-      context.output.info(`Downloading ${(progress.package ?? "package").split("(")[0]} · ${amount}`, progress); lastAt = now; lastPhase = progress.phase; return;
+      message = `Downloading ${(progress.package ?? "package").split("(")[0]} · ${amount} · ${completed}/${total}`;
+    } else if (progress.phase === "resolving") message = `Progress: resolving ${total} direct dependenc${total === 1 ? "y" : "ies"}`;
+    else if (progress.phase === "resolved") message = `Progress: resolved ${total}`;
+    else if (progress.phase === "fetching") message = `Progress: resolved ${total}, reused ${reused}, downloaded ${downloaded}, fetched ${completed}/${total}`;
+    else if (progress.phase === "inspecting") message = `Progress: resolved ${total}, reused ${reused}, downloaded ${downloaded}, inspected ${completed}/${total}`;
+    else if (progress.phase === "linking") message = `Progress: resolved ${total}, reused ${reused}, downloaded ${downloaded}, linking`;
+    else {
+      context.output.finishProgress?.();
+      context.output.info(`Progress: resolved ${total}, reused ${reused}, downloaded ${downloaded}, done`, progress);
+      lastPhase = progress.phase; lastAt = now; return;
     }
-    if (!phaseChanged && (progress.phase === "fetching" || progress.phase === "inspecting") && bucket === lastBucket && completed !== total) return;
-    if (progress.phase === "resolving") context.output.info(`Resolving ${total} direct dependenc${total === 1 ? "y" : "ies"} and their transitive graph...`, progress);
-    else if (progress.phase === "resolved") context.output.info(`Resolved ${total} package${total === 1 ? "" : "s"}.`, progress);
-    else if (progress.phase === "fetching") context.output.info(`Fetching packages ${completed}/${total} · ${progress.cached ?? 0} cached · ${progress.downloaded ?? 0} downloaded`, progress);
-    else if (progress.phase === "inspecting") context.output.info(`Security inspection ${completed}/${total} packages`, progress);
-    else if (progress.phase === "linking") context.output.info(`Linking ${total} package${total === 1 ? "" : "s"} from the content-addressed store...`, progress);
-    else context.output.info(`Install ready · ${progress.cached ?? 0} cached · ${progress.downloaded ?? 0} downloaded`, progress);
-    lastPhase = progress.phase; lastAt = now; lastBucket = bucket;
+    context.output.progress?.(message, progress);
+    lastPhase = progress.phase; lastAt = now;
   };
 }
 
@@ -1044,7 +1049,7 @@ export async function runCommand(name: CommandName, context: CommandContext): Pr
         ? await addDependencies(cwd, context.args, context.options, {
             signal: context.signal,
             ...selectedRegistry(context.options),
-            prompts: commandInstallPrompts(context.options),
+            prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
             onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
             onSecurityEvidence: collectSecurityEvidence,
             onProgress: reportProgress,
@@ -1053,7 +1058,7 @@ export async function runCommand(name: CommandName, context: CommandContext): Pr
           ? await removeDependencies(cwd, context.args, context.options, {
               signal: context.signal,
               ...selectedRegistry(context.options),
-              prompts: commandInstallPrompts(context.options),
+              prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
               onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
               onSecurityEvidence: collectSecurityEvidence,
               onProgress: reportProgress,
@@ -1062,7 +1067,7 @@ export async function runCommand(name: CommandName, context: CommandContext): Pr
             ? await updateDependencies(cwd, context.args, context.options, {
                 signal: context.signal,
                 ...selectedRegistry(context.options),
-                prompts: commandInstallPrompts(context.options),
+                prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
                 onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
                 onSecurityEvidence: collectSecurityEvidence,
                 onProgress: reportProgress,
@@ -1073,7 +1078,7 @@ export async function runCommand(name: CommandName, context: CommandContext): Pr
               specifications: context.args,
               commandOptions: context.options,
               signal: context.signal,
-              prompts: commandInstallPrompts(context.options),
+              prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
               onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
               onSecurityEvidence: collectSecurityEvidence,
               onProgress: reportProgress,
@@ -1086,11 +1091,14 @@ export async function runCommand(name: CommandName, context: CommandContext): Pr
         const lifecycles = [...result.analyses.values()].flatMap((analyzed) => analyzed.lifecycles);
         const limited = findings.filter((finding) => finding.ruleId === "BNPM-SEC-009").length;
         const warnings = findings.length - limited;
-        context.output.info(`Security review: ${result.analyses.size} package${result.analyses.size === 1 ? "" : "s"} inspected · ${warnings} finding${warnings === 1 ? "" : "s"} · ${lifecycles.length} install script${lifecycles.length === 1 ? "" : "s"}${limited > 0 ? ` · ${limited} bounded scan${limited === 1 ? "" : "s"}` : ""}${context.options.details ? "" : " (use --details for evidence)"}`);
+        const securitySummary = result.analyses.size === 0 && context.options.packageLockOnly
+          ? "Security: content inspection skipped for lockfile-only resolution"
+          : result.analyses.size === 0 && result.graph.packages.size > 0
+            ? "Security: existing verified decisions reused"
+            : `Security: ${result.analyses.size} package${result.analyses.size === 1 ? "" : "s"} inspected · ${warnings === 0 ? "no findings" : `${warnings} finding${warnings === 1 ? "" : "s"}`} · ${lifecycles.length === 0 ? "no install scripts" : `${lifecycles.length} install script${lifecycles.length === 1 ? "" : "s"}`}${limited > 0 ? ` · ${limited} bounded scan${limited === 1 ? "" : "s"}` : ""}${(warnings > 0 || lifecycles.length > 0 || limited > 0) && !context.options.details ? " (use --details)" : ""}`;
+        context.output.info(securitySummary);
       }
       if (location.globalPaths && !context.options.packageLockOnly && !context.options.dryRun) await exposeGlobalBins(location.globalPaths);
-      const action = context.options.dryRun ? "Would install" : context.options.packageLockOnly ? "Resolved" : "Installed";
-      context.output.info(`${action} ${result.graph.packages.size} package${result.graph.packages.size === 1 ? "" : "s"}${context.options.packageLockOnly ? " into the lockfile only" : ""}`);
       if (result.skippedLifecyclePackages.length > 0) {
         context.output.error(`Skipped unapproved lifecycle scripts for ${result.skippedLifecyclePackages.join(", ")}`);
         return ExitCode.installIncomplete;

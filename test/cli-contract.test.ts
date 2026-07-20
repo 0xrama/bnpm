@@ -121,7 +121,7 @@ test("help and version are side-effect-free through both executable names", asyn
   assertJsonProtocol(versionEvents);
   assert.equal(versionEvents.length, 1);
   assert.equal(versionEvents[0]?.type, "result");
-  assert.equal((versionEvents[0]?.data as { readonly summary?: unknown }).summary, "0.0.2");
+  assert.equal((versionEvents[0]?.data as { readonly summary?: unknown }).summary, "0.0.3");
 
   const bnpmx = await bnpmxExecutable("help");
   const bnpmxHelp = await execute(bnpmx, ["-h"]);
@@ -550,8 +550,9 @@ test("documented commands dispatch to their correct flow", async () => {
 test("human installs summarize security inspection instead of streaming package-by-package noise", async () => {
   const project = join(root, "inspection-summary"); await mkdir(project); await writeFile(join(project, "package.json"), JSON.stringify({ name: "inspection-summary", version: "1.0.0" }));
   const result = await execute(cli, ["install"], { cwd: project }); assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /Security review: \d+ packages? inspected/); assert.doesNotMatch(result.stdout, /Security inspection for/);
-  assert.match(result.stdout, /Resolving \d+ direct dependenc/); assert.match(result.stdout, /Fetching packages/); assert.match(result.stdout, /Security inspection/); assert.match(result.stdout, /Linking \d+ package/); assert.match(result.stdout, /Install ready/);
+  assert.match(result.stdout, /Security: \d+ packages? inspected/); assert.doesNotMatch(result.stdout, /Security inspection for/);
+  assert.match(result.stdout, /Progress: resolved \d+, reused \d+, downloaded \d+, done/);
+  assert.doesNotMatch(result.stdout, /Resolving|Fetching packages|Security inspection|Linking|Install ready|Installed \d+ packages/);
 });
 
 test("bnpmx dispatches to ephemeral mode via basename", async () => {

@@ -12,6 +12,8 @@ export interface CommandResult {
 
 export interface Output {
   readonly passthroughChildOutput?: boolean;
+  progress?(message: string, details?: unknown): void;
+  finishProgress?(): void;
   info(message: string, details?: unknown): void;
   error(message: string, details?: unknown): void;
   childOutput(stream: "stdout" | "stderr", text: string, attribution?: { readonly package?: string; readonly stage?: string; readonly truncated?: boolean }): void;
@@ -78,6 +80,7 @@ function sanitizeData(value: unknown): unknown {
 export function createOutput(json: boolean, command: string): Output {
   let sequence = 0;
   let finished = false;
+  let progressActive = false;
 
   function emit(type: JsonEvent["type"], data: unknown): void {
     if (!json || finished) {
@@ -87,14 +90,36 @@ export function createOutput(json: boolean, command: string): Output {
     process.stdout.write(`${JSON.stringify(event)}\n`);
   }
 
+  function clearProgress(): void {
+    if (!json && progressActive && process.stdout.isTTY) {
+      process.stdout.clearLine(0);
+      process.stdout.cursorTo(0);
+      progressActive = false;
+    }
+  }
+
   function human(message: string, stream: NodeJS.WriteStream): void {
     if (!finished) {
+      clearProgress();
       stream.write(`${sanitizeText(message)}\n`);
     }
   }
 
   return {
     passthroughChildOutput: !json,
+    progress(message, details) {
+      if (json) {
+        emit("info", { message: sanitizeText(message), ...(details === undefined ? {} : { data: sanitizeData(details) }) });
+      } else if (!finished && process.stdout.isTTY) {
+        process.stdout.clearLine(0);
+        process.stdout.cursorTo(0);
+        process.stdout.write(sanitizeText(message));
+        progressActive = true;
+      }
+    },
+    finishProgress() {
+      clearProgress();
+    },
     info(message, details) {
       if (json) {
         emit("info", { message: sanitizeText(message), ...(details === undefined ? {} : { data: sanitizeData(details) }) });

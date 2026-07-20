@@ -437,6 +437,7 @@ export async function installProject(options: InstallProjectOptions): Promise<In
   if (options.commandOptions?.packageLockOnly || options.commandOptions?.dryRun) {
     const lockfile = createLockfile(graph, requirements, { registry: registry.href, recentReleaseHours });
     if (options.commandOptions.packageLockOnly && !options.commandOptions.dryRun && !options.commandOptions.offline && !options.commandOptions.frozenLockfile) await writeLockfileAtomic(paths.lockfile, lockfile);
+    options.onProgress?.({ phase: "complete", completed: installGraph.packages.size, total: installGraph.packages.size, cached: 0, downloaded: 0 });
     return { graph, lockfile, recentReleaseDecisions: finalRecentDecisions, skippedLifecyclePackages: [], analyses: new Map(), policyDecisions: [] };
   }
 
@@ -446,6 +447,7 @@ export async function installProject(options: InstallProjectOptions): Promise<In
       return lifecycleStages.some((stage) => pkg.manifest.scripts?.[stage] && approval?.scripts[stage] === undefined);
     }).map((pkg) => pkg.id);
     if (skippedLifecyclePackages.length === 0) {
+      options.onProgress?.({ phase: "complete", completed: installGraph.packages.size, total: installGraph.packages.size, cached: installGraph.packages.size, downloaded: 0 });
       return {
         graph,
         lockfile: await readFile(paths.lockfile, "utf8"),
@@ -548,7 +550,7 @@ export async function installProject(options: InstallProjectOptions): Promise<In
     error.name = "PolicyError";
     throw error;
   }
-  if (options.prompts?.approveLifecycle) {
+  if (options.prompts?.approveLifecycle && !options.commandOptions?.ignoreScripts) {
     const updated: PackagePolicyDecision[] = [];
     for (const decision of policyDecisions) {
       const analyzed = analyses.get(decision.packageId);

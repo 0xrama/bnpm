@@ -1,6 +1,6 @@
 {
   "name": "@0xrama/bnpm",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A fast, security-focused npm-compatible package manager",
   "type": "module",
   "bin": {
