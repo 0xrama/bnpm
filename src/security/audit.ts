@@ -19,7 +19,7 @@ async function forEachConcurrent<T>(values: readonly T[], concurrency: number, w
 }
 
 export async function auditProject(options: { readonly paths: BnpmPaths; readonly registry?: URL; readonly registryConfiguration?: RegistryConfiguration; readonly fetch?: typeof globalThis.fetch; readonly signal?: AbortSignal; readonly now?: Date }): Promise<AuditResult> {
-  const { graph } = await readLockfileGraph(options.paths.lockfile, options.paths.store);
+  const { graph } = await readLockfileGraph(options.paths.lockfile);
   const packages = new Map<string, AnalyzedPackage>();
   await forEachConcurrent([...graph.packages], 8, async ([id, pkg]) => {
     try {

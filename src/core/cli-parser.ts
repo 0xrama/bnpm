@@ -73,6 +73,7 @@ export interface CommandOptions extends GlobalOptions {
   readonly diffDstPrefix?: string;
   readonly diffText?: boolean;
   readonly frozenLockfile: boolean;
+  readonly cleanInstall?: boolean;
   readonly offline: boolean;
   readonly omitDev: boolean;
   readonly omit?: readonly OmitDependencyType[];
@@ -795,7 +796,7 @@ export function parseInvocation(args: readonly string[], invokedAsBnpmx = false)
     throw new UsageError("ci accepts no package operands or save flags");
   }
   const options: CommandOptions = ci
-    ? { ...parsed.options, frozenLockfile: true, noSave: true }
+    ? { ...parsed.options, frozenLockfile: true, cleanInstall: true, noSave: true }
     : first === "adduser" ? { ...parsed.options, accountCreate: true } : parsed.options;
   if (name === "edit" && options.json) throw new UsageError("edit is interactive and cannot use --json");
   const operands = name === "stage" || name === "trust" || name === "token" ? [rest[1] ?? "", ...parsed.operands] : parsed.operands;

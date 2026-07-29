@@ -149,27 +149,27 @@ export async function buildIsolatedLayout(
   }
 }
 
-export async function activateWorkspaceImporterViews(projectRoot: string, graph: ResolutionGraph): Promise<void> {
+export interface PreparedLayoutTarget {
+  readonly target: string;
+  readonly prepared: string;
+}
+
+export async function prepareWorkspaceImporterViews(projectRoot: string, stagingRoot: string, graph: ResolutionGraph): Promise<readonly PreparedLayoutTarget[]> {
+  const targets: PreparedLayoutTarget[] = [];
+  const stagingDirectory = join(stagingRoot, "workspace-importers");
   for (const importer of graph.importers?.keys() ?? []) {
-    if (importer === "." || isAbsolute(importer) || importer.split(/[\\/]/).includes("..")) continue;
+    if (importer === ".") continue;
+    if (isAbsolute(importer) || importer.split(/[\\/]/).includes("..")) throw new LinkerError(`unsafe importer path ${importer}`);
     const importerRoot = resolve(projectRoot, importer);
     if (!importerRoot.startsWith(`${projectRoot}${sep}`)) throw new LinkerError(`unsafe importer path ${importer}`);
     const target = join(importerRoot, "node_modules");
-    const temporary = join(importerRoot, `.bnpm-node_modules-${randomUUID()}.tmp`);
-    const backup = join(importerRoot, `.bnpm-node_modules-${randomUUID()}.backup`);
+    const prepared = join(stagingDirectory, importerName(importer));
     const view = join(projectRoot, "node_modules", ".bnpm-importers", importerName(importer));
-    await symlink(process.platform === "win32" ? view : relative(importerRoot, view), temporary, process.platform === "win32" ? "junction" : "dir");
-    let backedUp = false;
-    try {
-      try { await rename(target, backup); backedUp = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      await rename(temporary, target);
-      if (backedUp) await rm(backup, { recursive: true, force: true });
-    } catch (error) {
-      await rm(temporary, { recursive: true, force: true });
-      if (backedUp) { await rm(target, { recursive: true, force: true }); await rename(backup, target); }
-      throw error;
-    }
+    await mkdir(dirname(prepared), { recursive: true });
+    await symlink(process.platform === "win32" ? view : relative(importerRoot, view), prepared, process.platform === "win32" ? "junction" : "dir");
+    targets.push({ target, prepared });
   }
+  return targets;
 }
 
 export async function activateProjectLayout(projectRoot: string, preparedNodeModules: string): Promise<void> {

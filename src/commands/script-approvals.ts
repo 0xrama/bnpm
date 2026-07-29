@@ -39,7 +39,7 @@ export async function mutateScriptApprovals(options: { readonly cwd: string; rea
   const discovered = await discoverProject(options.cwd);
   const root = discovered?.projectRoot ?? options.cwd;
   const paths = options.paths ?? createBnpmPaths({ cwd: root });
-  const locked = await readLockfileGraph(paths.lockfile, paths.store);
+  const locked = await readLockfileGraph(paths.lockfile);
   const requested = new Set(options.names);
   const selected = [...locked.lifecycleScripts]
     .filter(([id, scripts]) => Object.keys(scripts).length > 0 && (requested.size === 0 || requested.has(locked.graph.packages.get(id)?.name ?? "")))

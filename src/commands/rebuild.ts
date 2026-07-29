@@ -20,7 +20,7 @@ export async function rebuildPackages(options: {
   const discovered = await discoverProject(options.cwd);
   const projectRoot = discovered?.projectRoot ?? options.cwd;
   const paths = options.paths ?? createBnpmPaths({ cwd: projectRoot });
-  const locked = await readLockfileGraph(paths.lockfile, paths.store);
+  const locked = await readLockfileGraph(paths.lockfile);
   const selected = new Set(options.names ?? []);
   const unknown = [...selected].filter((name) => ![...locked.graph.packages.values()].some((pkg) => pkg.name === name));
   if (unknown.length > 0) {

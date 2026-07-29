@@ -55,8 +55,8 @@ test("resolver selects deterministic exact identities for ranges, aliases, and c
   assert.equal(graph.packages.get("shared@1.0.0")?.dependencies.get("alpha"), "alpha@1.1.0");
   assert.deepEqual(calls.sort(), ["alpha", "shared"]);
 
-  const first = createLockfile(graph, requirements, { registry: "https://registry.example/", recentReleaseHours: 6 });
-  const second = createLockfile(graph, [...requirements].reverse(), { registry: "https://registry.example/", recentReleaseHours: 6 });
+  const first = createLockfile(graph, requirements, { registry: "https://registry.example/", recentReleaseHours: 6, resolutionInputHash: "0".repeat(64) });
+  const second = createLockfile(graph, [...requirements].reverse(), { registry: "https://registry.example/", recentReleaseHours: 6, resolutionInputHash: "0".repeat(64) });
   assert.equal(first, second);
   assert.match(first, /^importers:/m);
   assert.match(first, /alpha@1\.1\.0:/);

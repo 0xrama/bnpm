@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -46,7 +46,7 @@ async function packageTarball(): Promise<Buffer> {
 test("installer completes a verified scriptless registry install end to end", async () => {
   const project = join(root, "project");
   const cache = join(root, "cache");
-  await import("node:fs/promises").then(({ mkdir }) => mkdir(project, { recursive: true }));
+  await mkdir(project, { recursive: true });
   await writeFile(join(project, "package.json"), '{"name":"project","dependencies":{"fixture":"^1.0.0"}}\n');
   const tarball = await packageTarball();
   const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
@@ -95,7 +95,7 @@ test("installer completes a verified scriptless registry install end to end", as
   await assert.rejects(stat(join(project, ".bnpm-install-invalidated")), { code: "ENOENT" });
 
   const extraneous = join(project, "node_modules", "extraneous");
-  await import("node:fs/promises").then(({ mkdir }) => mkdir(extraneous));
+  await mkdir(extraneous);
   await writeFile(join(extraneous, "package.json"), '{"name":"extraneous","version":"1.0.0"}\n');
   await installProject({
     cwd: project,
@@ -110,8 +110,77 @@ test("installer completes a verified scriptless registry install end to end", as
 
   const stored = storePath(paths.store, integrity);
   await chmod(stored, 0o755);
-  await chmod(join(stored, "package.json"), 0o644);
-  await writeFile(join(stored, "package.json"), "corrupt");
+  await chmod(join(stored, "cli.js"), 0o755);
+  await writeFile(join(stored, "cli.js"), "corrupt");
   await installProject({ cwd: project, paths, registry: new URL("https://registry.example/"), fetch: fetchMock, now: new Date("2026-07-18T00:00:00Z") });
+  assert.match(await readFile(join(project, "node_modules", "fixture", "cli.js"), "utf8"), /^#!\/usr\/bin\/env node/);
+});
+
+test("frozen clean installs reconstruct from the lockfile and remove extraneous packages", async () => {
+  const project = join(root, "fresh-lock-project");
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "package.json"), '{"name":"project","dependencies":{"fixture":"^1.0.0"}}\n');
+  const tarball = await packageTarball();
+  const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
+  const registry = new URL("https://registry.example/");
+  const registryFetch: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/fixture")) return Response.json({
+      name: "fixture",
+      "dist-tags": { latest: "1.0.0" },
+      versions: { "1.0.0": { name: "fixture", version: "1.0.0", dist: { integrity, tarball: "https://registry.example/fixture/-/fixture-1.0.0.tgz" } } },
+      time: { "1.0.0": "2026-01-01T00:00:00.000Z" },
+    });
+    if (url.endsWith("fixture-1.0.0.tgz")) return new Response(new Uint8Array(tarball));
+    return new Response("not found", { status: 404 });
+  };
+  const firstPaths = createBnpmPaths({ home: join(root, "fresh-home"), cwd: project, environment: { BNPM_CACHE_HOME: join(root, "fresh-cache-a") } });
+  await installProject({ cwd: project, paths: firstPaths, registry, fetch: registryFetch, now: new Date("2026-07-18T00:00:00Z") });
+  await rm(join(project, "node_modules"), { recursive: true, force: true });
+  const secondPaths = createBnpmPaths({ home: join(root, "fresh-home"), cwd: project, environment: { BNPM_CACHE_HOME: join(root, "fresh-cache-b") } });
+  const calls: string[] = [];
+  const frozenOptions = { json: false, allowRecent: [], allowDangerous: [], frozenLockfile: true, cleanInstall: true, offline: false, omitDev: false, saveExact: false, noSave: true } as const;
+  await installProject({
+    cwd: project,
+    paths: secondPaths,
+    registry,
+    commandOptions: frozenOptions,
+    fetch: async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/fixture")) throw new Error("frozen install performed mutable registry resolution");
+      if (url.endsWith("fixture-1.0.0.tgz")) return new Response(new Uint8Array(tarball));
+      return new Response("not found", { status: 404 });
+    },
+    now: new Date("2026-07-18T00:00:00Z"),
+  });
+  assert.deepEqual(calls, ["https://registry.example/fixture/-/fixture-1.0.0.tgz"]);
   assert.equal(JSON.parse(await readFile(join(project, "node_modules", "fixture", "package.json"), "utf8")).version, "1.0.0");
+  const extraneous = join(project, "node_modules", "extraneous");
+  await mkdir(extraneous);
+  await writeFile(join(extraneous, "package.json"), '{"name":"extraneous","version":"1.0.0"}\n');
+  await installProject({ cwd: project, paths: secondPaths, registry, commandOptions: frozenOptions, fetch: async () => { throw new Error("warm frozen install used the network"); }, now: new Date("2026-07-18T00:00:00Z") });
+  await assert.rejects(stat(extraneous), { code: "ENOENT" });
+});
+
+test("frozen installs reject changed resolution inputs even when requirements are unchanged", async () => {
+  const project = join(root, "resolution-input-project");
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "package.json"), '{"name":"project","dependencies":{"fixture":"1.0.0"}}\n');
+  const tarball = await packageTarball();
+  const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
+  const fetchMock: typeof fetch = async (input) => String(input).endsWith("/fixture")
+    ? Response.json({ name: "fixture", "dist-tags": { latest: "1.0.0" }, versions: { "1.0.0": { name: "fixture", version: "1.0.0", dist: { integrity, tarball: "https://registry.example/fixture.tgz" } } }, time: { "1.0.0": "2026-01-01T00:00:00.000Z" } })
+    : new Response(new Uint8Array(tarball));
+  const paths = createBnpmPaths({ home: join(root, "resolution-home"), cwd: project, environment: { BNPM_CACHE_HOME: join(root, "resolution-cache") } });
+  await installProject({ cwd: project, paths, registry: new URL("https://registry.example/"), fetch: fetchMock, now: new Date("2026-07-18T00:00:00Z") });
+  await writeFile(join(project, "package.json"), '{"name":"project","dependencies":{"fixture":"1.0.0"},"overrides":{"fixture":"1.0.0"}}\n');
+  await assert.rejects(() => installProject({
+    cwd: project,
+    paths,
+    registry: new URL("https://registry.example/"),
+    fetch: async () => { throw new Error("mismatched frozen lock attempted network access"); },
+    commandOptions: { json: false, allowRecent: [], allowDangerous: [], frozenLockfile: true, cleanInstall: true, offline: false, omitDev: false, saveExact: false, noSave: true },
+    now: new Date("2026-07-18T00:00:00Z"),
+  }), /resolution settings do not match/);
 });

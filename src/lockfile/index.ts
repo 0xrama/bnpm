@@ -1,11 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import YAML from "yaml";
 import type { Requirement, ResolutionGraph } from "../resolver/types.js";
 import type { PackageVersionManifest } from "../registry/types.js";
-import { storePath } from "../cache/store.js";
 import type { AnalyzedPackage } from "../security/analyzer.js";
 import type { PackagePolicyDecision } from "../security/policy.js";
 import type { TrustedPackageApproval } from "../config/types.js";
@@ -20,7 +19,20 @@ export class LockfileError extends Error {
 export interface LockfileOptions {
   readonly registry: string;
   readonly recentReleaseHours: 1 | 6 | 24;
+  readonly resolutionInputHash: string;
 }
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => [key, canonicalJson(entry)]));
+  }
+  return value;
+}
+
+export function hashResolutionInputs(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(canonicalJson(value))).digest("hex");
+}
+
 
 function objectFromMap<T>(map: ReadonlyMap<string, T>, convert: (value: T, key: string) => unknown): Record<string, unknown> {
   return Object.fromEntries([...map].sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => [key, convert(value, key)]));
@@ -43,8 +55,8 @@ export function createLockfile(
   const importerRoots = graph.importers ?? new Map([[".", graph.roots]]);
   const decisions = new Map((security?.decisions ?? []).map((decision) => [decision.packageId, decision]));
   const document = {
-    lockfileVersion: 1,
-    settings: { registry: options.registry, recentReleaseHours: options.recentReleaseHours },
+    lockfileVersion: 2,
+    settings: { registry: options.registry, recentReleaseHours: options.recentReleaseHours, resolutionInputHash: options.resolutionInputHash },
     importers: objectFromMap(importerRoots, (roots, importer) => ({
       dependencies: objectFromMap(roots, (version, name) => ({
         specifier: requirementByImporter.get(importer)?.get(name)?.specifier ?? requirementByName.get(name)?.specifier ?? version,
@@ -57,6 +69,7 @@ export function createLockfile(
         ? { integrity: pkg.integrity, tarball: pkg.tarball.href, ...(pkg.source === undefined || pkg.source === "registry" ? {} : { source: pkg.source }) }
         : { integrity: pkg.integrity, directory: pkg.localPath, source: "directory" },
       ...(pkg.publishedAt === undefined ? {} : { publishedAt: pkg.publishedAt.toISOString() }),
+      manifest: pkg.manifest,
       ...(pkg.dependencies.size === 0 ? {} : { dependencies: Object.fromEntries(pkg.dependencies) }),
       ...(security?.analyses.get(id)?.lifecycles.length ? {
         scripts: Object.fromEntries(security.analyses.get(id)?.lifecycles.map((fact) => [fact.stage, { command: fact.command, commandHash: fact.commandHash, contentHash: fact.contentHash }]) ?? []),
@@ -102,7 +115,7 @@ function identity(id: string): { readonly name: string; readonly version: string
   return { name: base.slice(0, separator), version: base.slice(separator + 1) };
 }
 
-export async function readLockfileGraph(path: string, storeRoot: string): Promise<{ readonly graph: ResolutionGraph; readonly requirements: readonly Requirement[]; readonly recentReleaseHours: 1 | 6 | 24; readonly approvals: Readonly<Record<string, TrustedPackageApproval>>; readonly dangerousPackageIds: ReadonlySet<string>; readonly lifecycleScripts: ReadonlyMap<string, Readonly<Record<string, { readonly commandHash: string; readonly contentHash: string }>>> }> {
+export async function readLockfileGraph(path: string): Promise<{ readonly graph: ResolutionGraph; readonly requirements: readonly Requirement[]; readonly recentReleaseHours: 1 | 6 | 24; readonly resolutionInputHash: string; readonly approvals: Readonly<Record<string, TrustedPackageApproval>>; readonly dangerousPackageIds: ReadonlySet<string>; readonly lifecycleScripts: ReadonlyMap<string, Readonly<Record<string, { readonly commandHash: string; readonly contentHash: string }>>> }> {
   let value: unknown;
   try {
     const document = YAML.parseDocument(await readFile(path, "utf8"), { uniqueKeys: true, strict: true });
@@ -113,9 +126,10 @@ export async function readLockfileGraph(path: string, storeRoot: string): Promis
     throw error;
   }
   const root = mapping(value, "root");
-  if (root.lockfileVersion !== 1) throw new LockfileError("unsupported lockfileVersion");
+  if (root.lockfileVersion !== 2) throw new LockfileError("unsupported lockfileVersion");
   const settings = mapping(root.settings, "settings");
   if (![1, 6, 24].includes(settings.recentReleaseHours as number)) throw new LockfileError("invalid recentReleaseHours");
+  if (typeof settings.registry !== "string" || typeof settings.resolutionInputHash !== "string" || !/^[a-f0-9]{64}$/.test(settings.resolutionInputHash)) throw new LockfileError("invalid resolution settings");
   const importerMappings = mapping(root.importers, "importers");
   const importers = new Map<string, ReadonlyMap<string, string>>();
   const requirements: Requirement[] = [];
@@ -142,15 +156,10 @@ export async function readLockfileGraph(path: string, storeRoot: string): Promis
     if (typeof resolution.integrity !== "string" || (typeof resolution.tarball !== "string" && typeof resolution.directory !== "string")) throw new LockfileError(`invalid resolution for ${id}`);
     if (resolution.source !== undefined && !["registry", "directory", "tarball", "git"].includes(resolution.source as string)) throw new LockfileError(`invalid package source for ${id}`);
     const parsedIdentity = identity(id);
-    const packageRoot = storePath(storeRoot, resolution.integrity);
-    let manifest: PackageVersionManifest;
-    try {
-      manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as PackageVersionManifest;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new LockfileError(`store entry is missing for ${id}`);
-      throw error;
-    }
-    if (manifest.name !== parsedIdentity.name || manifest.version !== parsedIdentity.version) throw new LockfileError(`store identity mismatch for ${id}`);
+    const manifest = mapping(entry.manifest, `package ${id} manifest`) as unknown as PackageVersionManifest;
+    if (manifest.name !== parsedIdentity.name || manifest.version !== parsedIdentity.version) throw new LockfileError(`manifest identity mismatch for ${id}`);
+    const distribution = mapping(manifest.dist, `package ${id} manifest dist`);
+    if (typeof distribution.tarball !== "string") throw new LockfileError(`invalid manifest distribution for ${id}`);
     const dependencyValues = mapping(entry.dependencies ?? {}, `package ${id} dependencies`);
     const dependencies = new Map<string, string>();
     for (const [name, dependencyId] of Object.entries(dependencyValues)) {
@@ -205,5 +214,5 @@ export async function readLockfileGraph(path: string, storeRoot: string): Promis
     }
     approvals[pkg.name] = { version: pkg.version, integrity: pkg.integrity, scripts };
   }
-  return { graph: { roots, packages, importers }, requirements, recentReleaseHours: settings.recentReleaseHours as 1 | 6 | 24, approvals, dangerousPackageIds, lifecycleScripts: lockedScripts };
+  return { graph: { roots, packages, importers }, requirements, recentReleaseHours: settings.recentReleaseHours as 1 | 6 | 24, resolutionInputHash: settings.resolutionInputHash as string, approvals, dangerousPackageIds, lifecycleScripts: lockedScripts };
 }

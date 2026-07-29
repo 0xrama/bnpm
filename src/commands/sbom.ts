@@ -19,7 +19,7 @@ export async function createSbom(options: { readonly cwd: string; readonly forma
   const discovered = await discoverProject(options.cwd);
   const root = discovered?.projectRoot ?? options.cwd;
   const paths = options.paths ?? createBnpmPaths({ cwd: root });
-  const locked = await readLockfileGraph(paths.lockfile, paths.store);
+  const locked = await readLockfileGraph(paths.lockfile);
   const rootManifest = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
   const rootName = typeof rootManifest.name === "string" ? rootManifest.name : "project";
   const rootVersion = typeof rootManifest.version === "string" ? rootManifest.version : "0.0.0";

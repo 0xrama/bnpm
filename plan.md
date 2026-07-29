@@ -10,7 +10,7 @@ Better NPM is substantially more than a CLI prototype. It resolves and installs 
 
 The current implementation includes a custom registry resolver, deterministic lockfile, quarantine and integrity pipeline, content-addressed store, isolated linking, lifecycle approval system, registry and publishing operations, workspaces, cache commands, auditing, SBOM generation, and recent-publication policy.
 
-Normal registry installation works, the security design contains valuable protections, and the current small benchmark is competitive. However, the lockfile and clean-CI contract, warm-store integrity checks, and lifecycle transaction model are production blockers. The project is currently suitable for experimentation and controlled projects, not as the sole package manager for critical CI or broad npm ecosystem compatibility.
+Normal registry installation works, the security design contains valuable protections, and the current small benchmark is competitive. The 2026-07-22 correctness milestone completed lockfile reconstruction, exact clean CI, full warm-store verification, resolution-input binding, and staged transactional dependency lifecycles. Broad resolver compatibility, native cross-platform qualification, failure injection, and enterprise configuration remain production blockers.
 
 ## Implemented package-manager capabilities
 
@@ -38,7 +38,7 @@ CLI → manifest/config → resolver → registry/source fetch
 The following checks were performed on 2026-07-22:
 
 - TypeScript check: **passed**.
-- Test suite: **181/181 passed**.
+- Test suite: **185/185 passed**.
 - Packaged installation/executable smoke test: **passed**.
 - Live registry install of `is-number@7.0.0`: **passed**.
 - Loading the installed package through Node: **passed**.
@@ -55,26 +55,17 @@ Current controlled benchmark fixture:
 
 This benchmark covers four packages on one machine. It demonstrates a competitive path, not general pnpm-class performance.
 
-# Production blockers
+# Completed correctness milestone
 
-## P0. Redesign the lockfile as a complete reconstruction contract
+## Completed: lockfile as a complete reconstruction contract
 
-### Problem
+### Implemented outcome
 
-`readLockfileGraph()` reconstructs package manifests by reading them from the existing global store (`src/lockfile/index.ts:105-173`). Consequently, a valid `bnpm-lock.yaml` cannot hydrate an empty cache on a fresh machine.
+Lockfile version 2 embeds each package's immutable source, integrity, dependency edges, peer-context identity, complete materialized manifest, publication timestamp, lifecycle facts, and security decisions. `readLockfileGraph()` reconstructs the graph without reading the global store.
 
-A fresh-cache reproduction using a valid lockfile and isolated empty `BNPM_CACHE_HOME` failed with:
+A frozen clean install was verified with an empty `BNPM_CACHE_HOME`: it fetched the exact locked tarball, performed no mutable registry metadata resolution, verified integrity, and recreated the installation.
 
-```text
-Lockfile error: store entry is missing for is-number@7.0.0
-exit: 3
-```
-
-The command also emitted an internal `exitCode: 70` event before reporting the result as a security-policy failure with exit code 3. Error classification is inconsistent.
-
-### Required outcome
-
-The lockfile must contain enough immutable information to reconstruct every package without pre-existing local state:
+The reconstruction contract contains:
 
 - Exact identity and source type.
 - Registry or source location.
@@ -91,22 +82,11 @@ The lockfile must contain enough immutable information to reconstruct every pack
 - Offline mode still fails clearly if required artifacts are unavailable.
 - Lockfile errors map to one stable result category and process exit code.
 
-## P0. Bind lock validity to every resolution-affecting input
+## Completed: bind lock validity to every resolution-affecting input
 
-### Problem
+### Implemented outcome
 
-`requirementKeys()` compares only importer, package name, and specifier. It excludes:
-
-- Dependency kind: production, development, optional, peer, or workspace.
-- Root and workspace overrides.
-- Registry/source routing that affects package identity.
-- Relevant resolver and workspace settings.
-
-An override or dependency-section change can therefore reuse a graph generated under different semantics.
-
-### Required outcome
-
-Add a normalized lockfile settings/input snapshot or hash covering every value that can alter resolution or installation semantics.
+The lock stores a deterministic SHA-256 hash over normalized requirements including dependency kind and importer, root and workspace overrides, default and scoped registry routing, selected workspace paths, runtime compatibility inputs, recent-release policy, and allowed recent versions. Frozen and offline installs reject mismatches before fetching or resolving.
 
 ### Acceptance criteria
 
@@ -116,29 +96,11 @@ Add a normalized lockfile settings/input snapshot or hash covering every value t
 - Frozen installs reject all mismatches with an actionable error.
 - Equivalent normalized inputs remain deterministic regardless of JSON key order.
 
-## P0. Require full integrity verification for store reuse
+## Completed: require full integrity verification for store reuse
 
-### Problem
+### Implemented outcome
 
-Locked graph reuse calls:
-
-```ts
-verifyStoreEntry(..., { full: false })
-```
-
-This verifies store metadata and `package.json`, not every installed file. Corruption or tampering elsewhere in a package can survive the locked warm path until an explicit full cache verification.
-
-### Required outcome
-
-Warm installs must preserve the central guarantee that linked content matches the expected package integrity.
-
-Potential approaches must be evaluated for security and performance:
-
-- Full verification on every reuse.
-- A sealed Merkle/file manifest verified against immutable filesystem metadata.
-- Platform-supported immutable or verifiable storage primitives.
-
-A metadata-only shortcut is insufficient unless mutations are reliably detectable.
+Every warm-store reuse performs a complete content hash verification, including source files and executables. Corrupt entries are fetched and repaired online or rejected offline before linking. The former metadata-only `full: false` warm path was removed.
 
 ### Acceptance criteria
 
@@ -147,21 +109,11 @@ A metadata-only shortcut is insufficient unless mutations are reliably detectabl
 - Verification remains bounded and benchmarked.
 - The security guarantee is documented accurately.
 
-## P0. Make `bnpm ci` an exact clean recreation
+## Completed: make `bnpm ci` an exact clean recreation
 
-### Problem
+### Implemented outcome
 
-`ci` is primarily parsed as install with frozen-lockfile behavior. The warm-layout check verifies required root identities but does not prove the complete physical layout is exact or free of extraneous entries.
-
-### Required outcome
-
-`bnpm ci` must:
-
-1. Validate the lock against all manifest and resolution inputs.
-2. Reconstruct packages from an empty store when necessary.
-3. Remove or atomically replace the previous installation.
-4. Recreate the exact locked graph.
-5. Verify the resulting physical layout.
+`bnpm ci` now validates the complete lock input hash, reconstructs missing artifacts directly from immutable lock data, builds a new isolated layout from scratch, runs approved dependency lifecycles in staging, and atomically replaces the root layout, workspace importer views, and lockfile transaction targets. Extraneous packages are removed, and any pre-commit failure restores the previous installation.
 
 ### Acceptance criteria
 
@@ -207,22 +159,16 @@ Some features such as catalogs and patches are pnpm-oriented rather than require
 
 # Lifecycle and native build correctness
 
-## P1. Make lifecycle execution transactional and dependency-topological
+## P1. Transactional and dependency-topological lifecycle execution
 
-### Problem
+**Core transaction completed 2026-07-22; native/platform qualification remains.**
 
-Dependency lifecycle scripts currently run after the new layout is activated and the lockfile is written. Scripts are ordered lexically by package ID and stage rather than by dependency topology.
+Approved dependency scripts now run against the staged layout before activation. Packages execute in deterministic dependency-first order while each package preserves `preinstall`, `install`, and `postinstall` stage order. Cyclic edges use deterministic depth-first ordering. Script failure discards staging and preserves the previous layout and lockfile; activation uses a recovery journal across the root layout, workspace views, and lockfile.
 
-If an approved script fails, the new layout and lock can remain active without a durable installation-incomplete state.
+Remaining qualification:
 
-### Required work
-
-- Order dependency builds topologically while preserving stage ordering.
-- Define cycle behavior explicitly.
-- Run scripts against a staged layout or add a durable incomplete-install journal.
-- Roll back activation when practical, or fail closed until a repair install completes.
 - Treat optional package build failures according to optional dependency semantics.
-- Terminate complete process trees on cancellation and timeout.
+- Terminate complete process trees on cancellation and timeout across supported platforms.
 - Qualify real native addons and build toolchains.
 
 ### Acceptance criteria
@@ -287,7 +233,7 @@ Required work:
 - Ensure rejected content cannot become a trusted reusable entry merely because it was promoted.
 - Add install-side registry signature or attestation verification if supported by the selected registry ecosystem.
 - Keep authoring-side Sigstore/provenance support separate from install-time verification claims.
-- Resolve the partial warm-store verification blocker.
+- Maintain full warm-store verification while evolving explicit quarantine, analysis, policy-review, and reusable trust transitions.
 
 ### Acceptance criteria
 
@@ -464,18 +410,15 @@ Security checks must not be disabled for benchmark comparisons.
 
 # Documentation and release cleanup
 
-## Correct stale status claims
+## Status claim maintenance
 
-`status.md` is stale in several places:
+`status.md` now records the 185-test suite and the completed correctness milestone. Remaining documentation and release gaps:
 
-- It reports 180 tests; the current suite has 181.
-- It says `package.json` is version `0.0.0` and private; it is version `0.0.3` with public publishing configured.
-- Version `0.0.3` is present on the npm registry.
-- It says GitHub Actions workflows are defined; this checkout has no `.github/workflows` directory.
+- This checkout still has no `.github/workflows` directory.
 - `package.json` still lacks explicit license, repository, homepage, and bugs metadata.
-- Its “initial package-manager scope implemented” wording does not disclose the fresh-cache `ci` failure or partial warm-store verification.
+- Hosted platform and failure-injection results must be added only after they are observed.
 
-Documentation must describe these as correctness blockers rather than only production qualification work.
+Documentation must continue distinguishing completed correctness guarantees from remaining production qualification.
 
 ## Complete release metadata and policy
 
@@ -490,11 +433,11 @@ Before a production claim or stable release:
 
 # Recommended execution order
 
-1. Redesign the lockfile as a complete fetch and reconstruction contract.
-2. Make fresh-cache `bnpm ci` reproduce an exact clean installation.
-3. Bind lock validity to overrides, dependency kinds, registry/source settings, and workspace state.
-4. Require full integrity verification before warm-store reuse.
-5. Make lifecycle activation transactional and dependency-topological.
+1. [Completed] Redesign the lockfile as a complete fetch and reconstruction contract.
+2. [Completed] Make fresh-cache `bnpm ci` reproduce an exact clean installation.
+3. [Completed] Bind lock validity to overrides, dependency kinds, registry/source settings, and workspace state.
+4. [Completed] Require full integrity verification before warm-store reuse.
+5. [Completed] Make lifecycle activation transactional and dependency-topological.
 6. Expand resolver, workspace, and optional-dependency compatibility.
 7. Add native cross-platform CI and failure-injection testing.
 8. Add metadata caching, conditional fetches, retry backoff, and lock-driven cache repair.

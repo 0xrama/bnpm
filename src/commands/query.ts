@@ -406,7 +406,7 @@ export async function queryInstalledPackages(options: { readonly cwd: string; re
   const root = discovered?.projectRoot ?? options.cwd;
   const importerRoot = discovered?.importerRoot ?? options.cwd;
   const paths = options.paths ?? createBnpmPaths({ cwd: root });
-  const locked = await readLockfileGraph(paths.lockfile, paths.store);
+  const locked = await readLockfileGraph(paths.lockfile);
   const importer = relative(root, importerRoot).split(sep).join("/") || ".";
   const roots = options.allWorkspaces
     ? new Map([...(locked.graph.importers ?? new Map([[".", locked.graph.roots]])).values()].flatMap((values) => [...values]))

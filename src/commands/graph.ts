@@ -76,7 +76,7 @@ export async function inspectInstalledGraph(cwd: string, options: { readonly nam
   const projectRoot = discovered?.projectRoot ?? cwd;
   const importerRoot = discovered?.importerRoot ?? cwd;
   const paths = createBnpmPaths({ cwd: projectRoot });
-  const locked = await readLockfileGraph(paths.lockfile, paths.store);
+  const locked = await readLockfileGraph(paths.lockfile);
   const importer = relative(projectRoot, importerRoot).split(sep).join("/") || ".";
   const roots = locked.graph.importers?.get(importer) ?? (importer === "." ? locked.graph.roots : new Map());
   return reportInstalledGraph(locked.graph, roots, options);
@@ -97,5 +97,5 @@ export async function findInstalledDuplicates(cwd: string): Promise<readonly Dup
   const discovered = await discoverProject(cwd);
   const root = discovered?.projectRoot ?? cwd;
   const paths = createBnpmPaths({ cwd: root });
-  return duplicatePackages((await readLockfileGraph(paths.lockfile, paths.store)).graph);
+  return duplicatePackages((await readLockfileGraph(paths.lockfile)).graph);
 }

@@ -1,18 +1,19 @@
 import npa from "npm-package-arg";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import type { CommandOptions } from "../core/cli-parser.js";
 import { downloadToQuarantine } from "../cache/quarantine.js";
 import { extractPackageArchive } from "../cache/archive.js";
 import { hashLocalPackage, promoteToStore, storePath, verifyStoreEntry } from "../cache/store.js";
 import { createBnpmPaths, type BnpmPaths } from "../config/paths.js";
-import { activateWorkspaceImporterViews, buildIsolatedLayout } from "../linker/project-linker.js";
-import { activateWithRecovery, recoverProjectLayout } from "../project/recovery.js";
-import { createLockfile, readLockfileGraph, writeLockfileAtomic, LockfileError } from "../lockfile/index.js";
+import { buildIsolatedLayout, prepareWorkspaceImporterViews } from "../linker/project-linker.js";
+import { activateInstallationWithRecovery, recoverProjectLayout } from "../project/recovery.js";
+import { createLockfile, hashResolutionInputs, readLockfileGraph, writeLockfileAtomic, LockfileError } from "../lockfile/index.js";
 import { parseManifest, type DependencySection, type PackageManifest } from "../project/manifest.js";
 import { discoverProject } from "../project/discovery.js";
 import { discoverWorkspacePackages } from "../project/workspaces.js";
 import { loadRegistryConfiguration, RegistryConfiguration, RoutedRegistryClient } from "../registry/configuration.js";
+import type { PackageVersionManifest } from "../registry/types.js";
 import { RegistryResolver } from "../resolver/registry-resolver.js";
 import { RemoteSourceProvider, type GitPreparer } from "../resolver/source-provider.js";
 import { ResolutionError } from "../resolver/registry-resolver.js";
@@ -95,16 +96,33 @@ async function forEachConcurrent<T>(values: readonly T[], concurrency: number, w
 }
 
 function requirementKeys(requirements: readonly Requirement[]): readonly string[] {
-  return requirements.map(({ name, specifier, importer }) => `${importer ?? "."}:${name}:${specifier}`).sort();
+  return requirements.map(({ name, specifier, kind, importer }) => `${importer ?? "."}:${kind}:${name}:${specifier}`).sort();
 }
 
 async function storedGraphIsUsable(graph: ResolutionGraph, storeRoot: string): Promise<boolean> {
   let valid = true;
   await forEachConcurrent([...graph.packages.values()], 16, async (pkg) => {
-    if (!await verifyStoreEntry(storePath(storeRoot, pkg.integrity), pkg.integrity, { full: false })) valid = false;
+    if (!await verifyStoreEntry(storePath(storeRoot, pkg.integrity), pkg.integrity)) valid = false;
   });
   return valid;
 }
+function dependencyFirstPackageIds(graph: ResolutionGraph): readonly string[] {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const ordered: string[] = [];
+  const visit = (id: string): void => {
+    if (visited.has(id) || visiting.has(id)) return;
+    visiting.add(id);
+    const pkg = graph.packages.get(id);
+    for (const dependencyId of [...(pkg?.dependencies.values() ?? [])].sort()) visit(dependencyId);
+    visiting.delete(id);
+    visited.add(id);
+    ordered.push(id);
+  };
+  for (const id of [...graph.packages.keys()].sort()) visit(id);
+  return ordered;
+}
+
 
 async function installedGraphMatches(projectRoot: string, graph: ResolutionGraph): Promise<boolean> {
   const importers = graph.importers ?? new Map([[".", graph.roots]]);
@@ -344,13 +362,12 @@ export async function installProject(options: InstallProjectOptions): Promise<In
   if (!lockExists && (options.commandOptions?.offline || options.commandOptions?.frozenLockfile)) throw new LockfileError("offline or frozen install requires bnpm-lock.yaml");
   let existingLock: Awaited<ReturnType<typeof readLockfileGraph>> | undefined;
   if (lockExists) {
-    try { existingLock = await readLockfileGraph(paths.lockfile, paths.store); }
+    try { existingLock = await readLockfileGraph(paths.lockfile); }
     catch (error) {
       if (options.commandOptions?.offline || options.commandOptions?.frozenLockfile) throw error;
       existingLock = undefined;
     }
   }
-  let locked = options.commandOptions?.offline ? existingLock : undefined;
   let workspaces: ReadonlyMap<string, string> | undefined;
   let overrides: Readonly<Record<string, string>> | undefined;
   try {
@@ -384,21 +401,42 @@ export async function installProject(options: InstallProjectOptions): Promise<In
     }
     requirements = allRequirements;
   }
+  const overridesByImporter = new Map<string, Readonly<Record<string, string>>>();
+  if (importerPaths) {
+    for (const [importer, path] of [...importerPaths].sort(([left], [right]) => left.localeCompare(right))) {
+      const manifestPath = join(path, "package.json");
+      const manifestOverrides = parseManifest(await readFile(manifestPath, "utf8"), manifestPath).overrides;
+      overridesByImporter.set(importer, { ...manifestOverrides, ...options.resolutionOverrides });
+    }
+  } else {
+    overridesByImporter.set(".", { ...overrides, ...options.resolutionOverrides });
+  }
+  const runtimeReport = process.platform === "linux" ? process.report?.getReport() as { readonly header?: { readonly glibcVersionRuntime?: unknown }; readonly sharedObjects?: readonly string[] } | undefined : undefined;
+  const runtimeLibc = typeof runtimeReport?.header?.glibcVersionRuntime === "string" ? "glibc" : runtimeReport?.sharedObjects?.some((value) => /(?:^|[\\/])(?:libc\.musl|ld-musl)/.test(value)) ? "musl" : undefined;
+  const resolutionInputHash = hashResolutionInputs({
+    requirements: requirements.map(({ name, specifier, kind, importer }) => ({ importer: importer ?? ".", name, specifier, kind })).sort((left, right) => left.importer.localeCompare(right.importer) || left.name.localeCompare(right.name) || left.kind.localeCompare(right.kind) || left.specifier.localeCompare(right.specifier)),
+    overrides: Object.fromEntries([...overridesByImporter].sort(([left], [right]) => left.localeCompare(right))),
+    registries: { default: registry.href, scopes: Object.fromEntries([...registryConfiguration.scopedRegistries].sort(([left], [right]) => left.localeCompare(right)).map(([scope, url]) => [scope, url.href])) },
+    workspaces: [...(workspaces ?? [])].map(([name, path]) => [name, relative(projectRoot, path).split(sep).join("/")] as const).sort(([left], [right]) => left.localeCompare(right)),
+    runtime: { platform: process.platform, architecture: process.arch, node: process.versions.node, ...(runtimeLibc === undefined ? {} : { libc: runtimeLibc }) },
+    recentReleaseHours: configuredRecentReleaseHours,
+    allowedRecentVersions: [...configuredAllowedRecent].sort(),
+  });
   const lockMatches = existingLock !== undefined && JSON.stringify(requirementKeys(requirements)) === JSON.stringify(requirementKeys(existingLock.requirements));
-  if (options.commandOptions?.offline && !lockMatches) throw new LockfileError("manifest requirements do not match the offline lockfile");
+  if ((options.commandOptions?.offline || options.commandOptions?.frozenLockfile) && !lockMatches) throw new LockfileError("manifest requirements do not match the lockfile");
+  const resolutionInputsMatch = existingLock !== undefined && existingLock.resolutionInputHash === resolutionInputHash;
+  if ((options.commandOptions?.offline || options.commandOptions?.frozenLockfile) && !resolutionInputsMatch) throw new LockfileError("resolution settings do not match the lockfile");
   const omitted = omittedDependencyTypes(options.commandOptions);
-  if (!options.forceResolution && lockMatches && existingLock && await storedGraphIsUsable(installationGraph(existingLock.graph, existingLock.requirements, omitted), paths.store)) locked = existingLock;
-  else if (options.commandOptions?.offline) throw new LockfileError("offline install requires complete, valid store entries");
+  const locked = !options.forceResolution && lockMatches && resolutionInputsMatch ? existingLock : undefined;
   let resolvedGraph: ResolutionGraph | undefined;
   if (!locked && importerPaths && workspaces) {
     const importers = new Map<string, ReadonlyMap<string, string>>();
-    const packages = new Map<string, import("../resolver/types.js").ResolvedPackage>();
+    const packages = new Map<string, ResolvedPackage>();
     const provider = registryProvider;
     for (const [importer, path] of [...importerPaths].sort(([left], [right]) => left.localeCompare(right))) {
       const importerRequirements = requirements.filter((requirement) => (requirement.importer ?? ".") === importer).map(({ importer: _importer, ...requirement }) => requirement);
-      const importerManifestPath = join(path, "package.json");
-      const importerOverrides = parseManifest(await readFile(importerManifestPath, "utf8"), importerManifestPath).overrides;
-      const part = await new RegistryResolver(provider, { baseDirectory: path, workspaces, overrides: { ...importerOverrides, ...options.resolutionOverrides }, sourceProvider, ...resolverRecency }).resolve(importerRequirements, options.signal);
+      const importerOverrides = overridesByImporter.get(importer);
+      const part = await new RegistryResolver(provider, { baseDirectory: path, workspaces, ...(importerOverrides === undefined ? {} : { overrides: importerOverrides }), sourceProvider, ...resolverRecency }).resolve(importerRequirements, options.signal);
       importers.set(importer, part.roots);
       for (const [id, pkg] of part.packages) {
         const existing = packages.get(id);
@@ -408,11 +446,12 @@ export async function installProject(options: InstallProjectOptions): Promise<In
     }
     resolvedGraph = { roots: new Map(importers.get(".") ?? []), packages: new Map([...packages].sort(([left], [right]) => left.localeCompare(right))), importers };
   }
+  const rootOverrides = overridesByImporter.get(".");
   const graph = locked?.graph ?? resolvedGraph ?? await new RegistryResolver(
     registryProvider,
-    { baseDirectory: importerRoot, ...(workspaces === undefined ? {} : { workspaces }), overrides: { ...overrides, ...options.resolutionOverrides }, sourceProvider, ...resolverRecency },
+    { baseDirectory: importerRoot, ...(workspaces === undefined ? {} : { workspaces }), ...(rootOverrides === undefined ? {} : { overrides: rootOverrides }), sourceProvider, ...resolverRecency },
   ).resolve(requirements, options.signal);
-  const installGraph = installationGraph(graph, requirements, omitted);
+  let installGraph = installationGraph(graph, requirements, omitted);
   options.onProgress?.({ phase: "resolved", total: installGraph.packages.size });
   const recentReleaseHours = options.recentReleaseHours ?? locked?.recentReleaseHours ?? configuredRecentReleaseHours;
   const allowedRecent = new Set(effectiveConfig.allowRecent.value);
@@ -435,13 +474,13 @@ export async function installProject(options: InstallProjectOptions): Promise<In
   }
 
   if (options.commandOptions?.packageLockOnly || options.commandOptions?.dryRun) {
-    const lockfile = createLockfile(graph, requirements, { registry: registry.href, recentReleaseHours });
+    const lockfile = createLockfile(graph, requirements, { registry: registry.href, recentReleaseHours, resolutionInputHash });
     if (options.commandOptions.packageLockOnly && !options.commandOptions.dryRun && !options.commandOptions.offline && !options.commandOptions.frozenLockfile) await writeLockfileAtomic(paths.lockfile, lockfile);
     options.onProgress?.({ phase: "complete", completed: installGraph.packages.size, total: installGraph.packages.size, cached: 0, downloaded: 0 });
     return { graph, lockfile, recentReleaseDecisions: finalRecentDecisions, skippedLifecyclePackages: [], analyses: new Map(), policyDecisions: [] };
   }
 
-  if (!options.forceRelink && locked && lockMatches && locked.dangerousPackageIds.size === 0 && await installedGraphMatches(projectRoot, installGraph)) {
+  if (!options.forceRelink && !options.commandOptions?.cleanInstall && locked && lockMatches && locked.dangerousPackageIds.size === 0 && await storedGraphIsUsable(installGraph, paths.store) && await installedGraphMatches(projectRoot, installGraph)) {
     const skippedLifecyclePackages = options.commandOptions?.ignoreScripts ? [] : [...installGraph.packages.values()].filter((pkg) => {
       const approval = locked?.approvals[pkg.name];
       return lifecycleStages.some((stage) => pkg.manifest.scripts?.[stage] && approval?.scripts[stage] === undefined);
@@ -461,19 +500,24 @@ export async function installProject(options: InstallProjectOptions): Promise<In
 
   const storeEntries = new Map<string, string>();
   const analyses = new Map<string, AnalyzedPackage>();
+  const materializedManifests = new Map<string, PackageVersionManifest>();
   let completedPackages = 0; let cachedPackages = 0; let downloadedPackages = 0; const progressTotal = installGraph.packages.size;
   const packageComplete = (cached: boolean): void => {
     completedPackages += 1; if (cached) cachedPackages += 1; else downloadedPackages += 1;
     options.onProgress?.({ phase: "fetching", completed: completedPackages, total: progressTotal, cached: cachedPackages, downloaded: downloadedPackages });
   };
   options.onProgress?.({ phase: "fetching", completed: 0, total: progressTotal, cached: 0, downloaded: 0 });
-  const inspect = async (id: string, pkg: ResolutionGraph["packages"] extends ReadonlyMap<string, infer P> ? P : never, root: string): Promise<void> => {
+  const inspect = async (id: string, pkg: ResolvedPackage, root: string): Promise<void> => {
+    const rawManifest = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as PackageVersionManifest;
+    if (rawManifest.name !== pkg.name || rawManifest.version !== pkg.version) throw new Error(`Verified package identity changed for ${id}`);
+    const manifest: PackageVersionManifest = { ...rawManifest, dist: pkg.manifest.dist };
+    materializedManifests.set(id, manifest);
     const analyzed = await analyzePackage({
       root,
       packageName: pkg.name,
       packageVersion: pkg.version,
       integrity: pkg.integrity,
-      ...(pkg.manifest.scripts === undefined ? {} : { scripts: pkg.manifest.scripts }),
+      ...(manifest.scripts === undefined ? {} : { scripts: manifest.scripts }),
     });
     analyses.set(id, analyzed);
     if (analyzed.analysis.findings.length > 0 || analyzed.lifecycles.length > 0) {
@@ -482,30 +526,32 @@ export async function installProject(options: InstallProjectOptions): Promise<In
   };
   try {
   await forEachConcurrent([...installGraph.packages], 16, async ([id, pkg]) => {
-    if (locked) {
-      const stored = storePath(paths.store, pkg.integrity);
-      storeEntries.set(id, stored);
+    const warm = storePath(paths.store, pkg.integrity);
+    if (await verifyStoreEntry(warm, pkg.integrity)) {
+      storeEntries.set(id, warm);
       packageComplete(true);
       return;
     }
+    if (options.commandOptions?.offline) throw new LockfileError(`offline install requires a complete, valid store entry for ${id}`);
     if (pkg.localPath) {
+      if (await hashLocalPackage(pkg.localPath) !== pkg.integrity) throw new LockfileError(`local package content no longer matches ${id}`);
       storeEntries.set(id, await promoteToStore(pkg.localPath, paths.store, pkg.integrity, { localPackage: true }));
-      packageComplete(true);
+      packageComplete(false);
       return;
     }
     if (pkg.preparedPath) {
       storeEntries.set(id, await promoteToStore(pkg.preparedPath, paths.store, pkg.integrity));
-      packageComplete(true);
+      packageComplete(false);
       return;
     }
-    const warm = storePath(paths.store, pkg.integrity);
-    try {
-      if (!await verifyStoreEntry(warm, pkg.integrity)) throw Object.assign(new Error("missing or corrupt warm store entry"), { code: "ENOENT" });
-      storeEntries.set(id, warm);
-      packageComplete(true);
+    if (pkg.source === "git" || (pkg.source === "tarball" && pkg.tarball.protocol === "file:")) {
+      const sourced = await sourceProvider.resolve(pkg.name, pkg.tarball.href, importerRoot, options.signal);
+      if (!sourced || sourced.actualName !== pkg.name || sourced.version !== pkg.version || sourced.integrity !== pkg.integrity || !sourced.preparedPath) {
+        throw new LockfileError(`immutable source no longer matches ${id}`);
+      }
+      storeEntries.set(id, await promoteToStore(sourced.preparedPath, paths.store, pkg.integrity));
+      packageComplete(false);
       return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     const quarantined = await downloadToQuarantine(pkg.tarball, pkg.integrity, {
       root: paths.quarantine,
@@ -532,6 +578,8 @@ export async function installProject(options: InstallProjectOptions): Promise<In
   } finally {
     await sourceProvider.cleanup();
   }
+  installGraph = { ...installGraph, packages: new Map([...installGraph.packages].map(([id, pkg]) => [id, { ...pkg, manifest: materializedManifests.get(id) ?? pkg.manifest }])) };
+  const lockGraph: ResolutionGraph = { ...graph, packages: new Map([...graph.packages].map(([id, pkg]) => [id, { ...pkg, manifest: materializedManifests.get(id) ?? pkg.manifest }])) };
 
   const allowedDangerous = new Set(options.commandOptions?.allowDangerous ?? []);
   for (const analyzed of analyses.values()) {
@@ -564,7 +612,7 @@ export async function installProject(options: InstallProjectOptions): Promise<In
     }
     policyDecisions = updated;
   }
-  const lockfile = createLockfile(graph, requirements, { registry: registry.href, recentReleaseHours }, { analyses, decisions: policyDecisions });
+  const lockfile = createLockfile(lockGraph, requirements, { registry: registry.href, recentReleaseHours, resolutionInputHash }, { analyses, decisions: policyDecisions });
   if (options.commandOptions?.frozenLockfile) {
     let current: string;
     try {
@@ -576,31 +624,39 @@ export async function installProject(options: InstallProjectOptions): Promise<In
     if (current !== lockfile) throw new LockfileError("frozen lockfile is not current with the manifest, graph, and security decisions");
   }
 
+  const stageIndex: Readonly<Record<string, number>> = Object.fromEntries(lifecycleStages.map((stage, index) => [stage, index]));
+  const packageIndex = new Map(dependencyFirstPackageIds(installGraph).map((id, index) => [id, index]));
+  const approved = policyDecisions.flatMap((decision) => decision.approvedLifecycles.map((fact) => ({ fact, packageId: decision.packageId }))).sort((left, right) =>
+    (packageIndex.get(left.packageId) ?? Number.MAX_SAFE_INTEGER) - (packageIndex.get(right.packageId) ?? Number.MAX_SAFE_INTEGER) ||
+    (stageIndex[left.fact.stage] ?? 0) - (stageIndex[right.fact.stage] ?? 0),
+  );
   const preparedRoot = await mkdtemp(join(projectRoot, ".bnpm-install-"));
   const preparedNodeModules = join(preparedRoot, "node_modules");
   try {
     options.onProgress?.({ phase: "linking", completed: 0, total: installGraph.packages.size, cached: cachedPackages, downloaded: downloadedPackages });
     await buildIsolatedLayout(preparedNodeModules, installGraph, storeEntries);
-    await activateWithRecovery(projectRoot, preparedNodeModules);
-    await activateWorkspaceImporterViews(projectRoot, installGraph);
+    for (const { fact, packageId: id } of options.commandOptions?.ignoreScripts ? [] : approved) {
+      await runLifecycle({
+        fact,
+        cwd: linkedPackagePath(preparedNodeModules, id, fact.packageName),
+        initialCwd: importerRoot,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        onOutput: (stream, text) => options.onChildOutput?.(stream, text, { package: id, stage: fact.stage }),
+      });
+    }
+    const preparedTargets = [
+      { target: join(projectRoot, "node_modules"), prepared: preparedNodeModules },
+      ...await prepareWorkspaceImporterViews(projectRoot, preparedRoot, installGraph),
+    ];
+    if (!options.commandOptions?.offline && !options.commandOptions?.frozenLockfile) {
+      const preparedLockfile = join(preparedRoot, "bnpm-lock.yaml");
+      await writeFile(preparedLockfile, lockfile, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      preparedTargets.push({ target: join(projectRoot, "bnpm-lock.yaml"), prepared: preparedLockfile });
+    }
+    await activateInstallationWithRecovery(projectRoot, preparedTargets);
     await clearInstalledLayoutInvalidation(projectRoot);
   } finally {
     await rm(preparedRoot, { recursive: true, force: true });
-  }
-  if (!options.commandOptions?.offline && !options.commandOptions?.frozenLockfile) await writeLockfileAtomic(paths.lockfile, lockfile);
-  const stageIndex = new Map<string, number>(lifecycleStages.map((stage, index) => [stage, index]));
-  const approved = policyDecisions.flatMap((decision) => decision.approvedLifecycles.map((fact) => ({ fact, packageId: decision.packageId }))).sort((left, right) =>
-    left.packageId.localeCompare(right.packageId) ||
-    (stageIndex.get(left.fact.stage) ?? 0) - (stageIndex.get(right.fact.stage) ?? 0),
-  );
-  for (const { fact, packageId: id } of options.commandOptions?.ignoreScripts ? [] : approved) {
-    await runLifecycle({
-      fact,
-      cwd: linkedPackagePath(join(projectRoot, "node_modules"), id, fact.packageName),
-      initialCwd: importerRoot,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      onOutput: (stream, text) => options.onChildOutput?.(stream, text, { package: id, stage: fact.stage }),
-    });
   }
   const skippedLifecyclePackages = options.commandOptions?.ignoreScripts ? [] : [...new Set(policyDecisions.flatMap((decision) => decision.skippedLifecycles.map((fact) => `${fact.packageName}@${fact.packageVersion}`)))];
   options.onProgress?.({ phase: "complete", completed: installGraph.packages.size, total: installGraph.packages.size, cached: cachedPackages, downloaded: downloadedPackages });

@@ -1,8 +1,8 @@
 # Better NPM status
 
-**Updated:** 2026-07-19  
+**Updated:** 2026-07-22  
 **Repository:** `/Users/sriram/code/bnpm`  
-**State:** Functional alpha; initial package-manager scope implemented and green, production qualification still in progress
+**State:** Functional alpha; lockfile reconstruction, exact clean CI, full store verification, resolution-input binding, and transactional dependency lifecycles implemented; production qualification still in progress
 
 ## Current result
 
@@ -71,7 +71,7 @@ The current working tree passes:
 
 ```text
 npm run check     strict TypeScript: passed
-npm test          180 tests: 180 passed, 0 failed
+npm test          185 tests: 185 passed, 0 failed
 verify:package    packed install/executable smoke test: passed
 git diff --check  passed
 ```

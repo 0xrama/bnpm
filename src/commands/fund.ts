@@ -24,6 +24,6 @@ export async function listFunding(options: { readonly cwd: string; readonly path
   const discovered = await discoverProject(options.cwd);
   const root = discovered?.projectRoot ?? options.cwd;
   const paths = options.paths ?? createBnpmPaths({ cwd: root });
-  const locked = await readLockfileGraph(paths.lockfile, paths.store);
+  const locked = await readLockfileGraph(paths.lockfile);
   return [...locked.graph.packages.values()].sort((left, right) => left.id.localeCompare(right.id)).flatMap((pkg) => funding(pkg.manifest.funding).map((entry) => ({ package: pkg.id, ...entry })));
 }

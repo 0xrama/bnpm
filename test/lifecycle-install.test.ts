@@ -95,3 +95,52 @@ test("binding.gyp creates an exact implicit node-gyp lifecycle decision", async 
   assert.deepEqual(result.skippedLifecyclePackages, []);
   assert.equal(await readFile(join(project, "node_modules", "native-addon", "native-built.txt"), "utf8"), "rebuild");
 });
+
+test("dependency lifecycle scripts run before consumer lifecycle scripts", async () => {
+  const project = join(root, "topological-project");
+  const consumer = join(root, "a-consumer");
+  const dependency = join(root, "z-dependency");
+  await mkdir(project, { recursive: true });
+  await mkdir(consumer, { recursive: true });
+  await mkdir(dependency, { recursive: true });
+  await writeFile(join(project, "package.json"), '{"name":"project","dependencies":{"a-consumer":"file:../a-consumer"}}');
+  await writeFile(join(dependency, "package.json"), '{"name":"z-dependency","version":"1.0.0","scripts":{"install":"node install.js"}}');
+  await writeFile(join(dependency, "install.js"), "require('node:fs').writeFileSync('built.txt', 'dependency-built')\n");
+  await writeFile(join(consumer, "package.json"), '{"name":"a-consumer","version":"1.0.0","dependencies":{"z-dependency":"file:../z-dependency"},"scripts":{"install":"node verify.js"}}');
+  await writeFile(join(consumer, "verify.js"), "require('node:fs').accessSync(require('node:path').join('node_modules', 'z-dependency', 'built.txt'))\n");
+  const dependencyIntegrity = await hashLocalPackage(dependency);
+  const consumerIntegrity = await hashLocalPackage(consumer);
+  const dependencyFact = (await analyzePackage({ root: dependency, packageName: "z-dependency", packageVersion: "1.0.0", integrity: dependencyIntegrity, scripts: { install: "node install.js" } })).lifecycles[0];
+  const consumerFact = (await analyzePackage({ root: consumer, packageName: "a-consumer", packageVersion: "1.0.0", integrity: consumerIntegrity, scripts: { install: "node verify.js" } })).lifecycles[0];
+  assert.ok(dependencyFact);
+  assert.ok(consumerFact);
+  await writeFile(join(project, "bnpm.yaml"), JSON.stringify({ trustedPackages: {
+    "z-dependency": { version: "1.0.0", integrity: dependencyIntegrity, scripts: { install: { commandHash: dependencyFact.commandHash, contentHash: dependencyFact.contentHash } } },
+    "a-consumer": { version: "1.0.0", integrity: consumerIntegrity, scripts: { install: { commandHash: consumerFact.commandHash, contentHash: consumerFact.contentHash } } },
+  } }));
+  const paths = createBnpmPaths({ home: join(root, "home"), cwd: project, environment: { BNPM_CACHE_HOME: join(root, "topological-cache") } });
+  const result = await installProject({ cwd: project, paths });
+  assert.deepEqual(result.skippedLifecyclePackages, []);
+  assert.equal(await readFile(join(project, "node_modules", "a-consumer", "node_modules", "z-dependency", "built.txt"), "utf8"), "dependency-built");
+});
+
+test("failed lifecycle scripts preserve the previous layout and lockfile", async () => {
+  const project = join(root, "transaction-failure-project");
+  const dependency = join(root, "failing-dependency");
+  await mkdir(join(project, "node_modules"), { recursive: true });
+  await mkdir(dependency, { recursive: true });
+  await writeFile(join(project, "node_modules", "sentinel"), "previous-layout");
+  await writeFile(join(project, "bnpm-lock.yaml"), "previous-lock\n");
+  await writeFile(join(project, "package.json"), '{"name":"project","dependencies":{"failing-dependency":"file:../failing-dependency"}}');
+  await writeFile(join(dependency, "package.json"), '{"name":"failing-dependency","version":"1.0.0","scripts":{"install":"node fail.js"}}');
+  await writeFile(join(dependency, "fail.js"), "process.exit(7)\n");
+  const integrity = await hashLocalPackage(dependency);
+  const fact = (await analyzePackage({ root: dependency, packageName: "failing-dependency", packageVersion: "1.0.0", integrity, scripts: { install: "node fail.js" } })).lifecycles[0];
+  assert.ok(fact);
+  await writeFile(join(project, "bnpm.yaml"), JSON.stringify({ trustedPackages: { "failing-dependency": { version: "1.0.0", integrity, scripts: { install: { commandHash: fact.commandHash, contentHash: fact.contentHash } } } } }));
+  const paths = createBnpmPaths({ home: join(root, "home"), cwd: project, environment: { BNPM_CACHE_HOME: join(root, "transaction-failure-cache") } });
+  await assert.rejects(() => installProject({ cwd: project, paths }), /exited with 7/);
+  assert.equal(await readFile(join(project, "node_modules", "sentinel"), "utf8"), "previous-layout");
+  assert.equal(await readFile(join(project, "bnpm-lock.yaml"), "utf8"), "previous-lock\n");
+  await assert.rejects(stat(join(project, "node_modules", "failing-dependency")), { code: "ENOENT" });
+});

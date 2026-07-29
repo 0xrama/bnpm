@@ -153,6 +153,7 @@ test("parser accepts only documented global positions, save combinations, and fo
     assert.equal(ci.name, "install");
     assert.equal(ci.options.frozenLockfile, true);
     assert.equal(ci.options.noSave, true);
+    assert.equal(ci.options.cleanInstall, true);
     assert.equal(ci.options.omitDev, true);
     assert.deepEqual(ci.args, []);
   }

@@ -102,7 +102,7 @@ export async function shrinkwrapProject(cwd: string): Promise<{ readonly path: s
   const importer = discovered.importerRoot === discovered.projectRoot ? "." : relative(discovered.projectRoot, discovered.importerRoot).split(sep).join("/");
   const manifestPath = resolve(discovered.importerRoot, "package.json");
   const manifest = object(JSON.parse(await readFile(manifestPath, "utf8")), manifestPath);
-  const locked = await readLockfileGraph(paths.lockfile, paths.store);
+  const locked = await readLockfileGraph(paths.lockfile);
   const bytes = createNpmShrinkwrap(locked.graph, manifest, locked.requirements, importer);
   const path = resolve(discovered.importerRoot, "npm-shrinkwrap.json");
   await writeLockfileAtomic(path, bytes);

@@ -8,12 +8,13 @@ import { inspectScriptApprovals, mutateApprovalDocument, pruneScriptApprovals } 
 import { createBnpmPaths } from "../src/config/paths.js";
 
 const lock = YAML.stringify({
-  lockfileVersion: 1,
-  settings: { registry: "https://registry.example/", recentReleaseHours: 1 },
+  lockfileVersion: 2,
+  settings: { registry: "https://registry.example/", recentReleaseHours: 1, resolutionInputHash: "0".repeat(64) },
   importers: { ".": { dependencies: {} } },
   packages: {
     "native@1.0.0": {
       resolution: { integrity: "sha512-exact", tarball: "https://registry.example/native.tgz" },
+      manifest: { name: "native", version: "1.0.0", dist: { integrity: "sha512-exact", tarball: "https://registry.example/native.tgz" } },
       scripts: { install: { command: "node-gyp rebuild", commandHash: "command-hash", contentHash: "content-hash" } },
     },
   },
