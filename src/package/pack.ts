@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readFile, realpath } from "node:fs/promises";
-import { basename, join, posix, relative, resolve, sep } from "node:path";
+import { join, posix, relative, resolve, sep } from "node:path";
 import { createGzip } from "node:zlib";
 import packlist from "npm-packlist";
 import semver from "semver";

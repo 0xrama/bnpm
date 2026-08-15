@@ -176,7 +176,7 @@ export class RemoteSourceProvider implements PackageSourceProvider {
     const key = parsed.type === "git" ? `${url.href}#${parsed.gitRange === undefined ? parsed.gitCommittish ?? "HEAD" : `semver:${parsed.gitRange}`}:${gitSubdir ?? ""}` : url.href;
     let pending = this.#pending.get(key);
     if (!pending) {
-      pending = parsed.type === "git" ? this.#materializeGit(name, url, parsed.gitCommittish ?? "HEAD", parsed.gitRange ?? undefined, gitSubdir, signal) : this.#materialize(name, url, signal);
+      pending = parsed.type === "git" ? this.#materializeGit(url, parsed.gitCommittish ?? "HEAD", parsed.gitRange ?? undefined, gitSubdir, signal) : this.#materialize(url, signal);
       this.#pending.set(key, pending);
     }
     try { return await pending; }
@@ -203,7 +203,7 @@ export class RemoteSourceProvider implements PackageSourceProvider {
     await Promise.all(paths.map((path) => rm(path, { recursive: true, force: true })));
   }
 
-  async #materialize(requestedName: string, url: URL, signal?: AbortSignal): Promise<SourcePackage> {
+  async #materialize(url: URL, signal?: AbortSignal): Promise<SourcePackage> {
     const quarantined = await downloadUnverifiedToQuarantine(url, {
       root: this.options.quarantineRoot,
       ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
@@ -238,7 +238,7 @@ export class RemoteSourceProvider implements PackageSourceProvider {
     }
   }
 
-  async #materializeGit(requestedName: string, repository: URL, ref: string, range: string | undefined, subdir: string | undefined, signal?: AbortSignal): Promise<SourcePackage> {
+  async #materializeGit(repository: URL, ref: string, range: string | undefined, subdir: string | undefined, signal?: AbortSignal): Promise<SourcePackage> {
     await mkdir(this.options.quarantineRoot, { recursive: true });
     const directory = await mkdtemp(join(this.options.quarantineRoot, "git-"));
     const checkout = join(directory, "checkout");

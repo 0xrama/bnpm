@@ -4,21 +4,16 @@ import { downloadUnverifiedToQuarantine, type QuarantinedTarball } from "../cach
 import type { BnpmPaths } from "../config/paths.js";
 import { RegistryError } from "./client.js";
 import { loadRegistryConfiguration, type RegistryConfiguration } from "./configuration.js";
+import { readBoundedBody } from "./response.js";
 
 const maxBytes = 32 * 1024 * 1024;
 
 async function boundedJson(response: Response, allowArray = false): Promise<Record<string, unknown> | readonly unknown[]> {
-  if (!response.body) throw new RegistryError("Registry returned an empty response", response.status);
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const value of response.body) {
-    const chunk = Buffer.from(value);
-    size += chunk.length;
-    if (size > maxBytes) throw new RegistryError("Registry response exceeded the size limit", response.status);
-    chunks.push(chunk);
-  }
+  const body = await readBoundedBody(response, maxBytes);
+  if (body.kind === "empty") throw new RegistryError("Registry returned an empty response", response.status);
+  if (body.kind === "too-large") throw new RegistryError("Registry response exceeded the size limit", response.status);
   try {
-    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const value = JSON.parse(body.bytes.toString("utf8"));
     if (typeof value !== "object" || value === null || (!allowArray && Array.isArray(value))) throw new Error("not an object");
     return value as Record<string, unknown> | readonly unknown[];
   } catch {
@@ -421,15 +416,17 @@ export async function mutateStagedPackage(options: RegistryMutationOptions & { r
   await requestJson({ configuration, registry, path: options.action === "approve" ? `/-/stage/${options.id}/approve` : `/-/stage/${options.id}`, method: options.action === "approve" ? "POST" : "DELETE", fetch: options.fetch, signal: options.signal, otp: options.otp });
 }
 
-export async function packageTrust(options: RegistryMutationOptions & { readonly package: string }): Promise<readonly Record<string, unknown>[]> {
-  const spec = packageSpec(options.package);
-  const { configuration, registry } = await context(options.paths, spec.name, options.registry);
-  const result = await requestJson({ configuration, registry, path: `/-/package/${spec.escapedName}/trust`, allowArray: true, fetch: options.fetch, signal: options.signal });
-  const values = Array.isArray(result) ? result : [result];
-  return values.map((value) => {
+function trustConfigurations(result: Record<string, unknown> | readonly unknown[]): readonly Record<string, unknown>[] {
+  return (Array.isArray(result) ? result : [result]).map((value) => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RegistryError("Registry returned an invalid trust configuration");
     return value as Record<string, unknown>;
   });
+}
+
+export async function packageTrust(options: RegistryMutationOptions & { readonly package: string }): Promise<readonly Record<string, unknown>[]> {
+  const spec = packageSpec(options.package);
+  const { configuration, registry } = await context(options.paths, spec.name, options.registry);
+  return trustConfigurations(await requestJson({ configuration, registry, path: `/-/package/${spec.escapedName}/trust`, allowArray: true, fetch: options.fetch, signal: options.signal }));
 }
 
 export async function revokePackageTrust(options: RegistryMutationOptions & { readonly package: string; readonly id: string; readonly dryRun?: boolean }): Promise<void> {
@@ -443,12 +440,7 @@ export async function revokePackageTrust(options: RegistryMutationOptions & { re
 export async function createPackageTrust(options: RegistryMutationOptions & { readonly package: string; readonly configuration: Readonly<Record<string, unknown>> }): Promise<readonly Record<string, unknown>[]> {
   const spec = packageSpec(options.package);
   const { configuration, registry } = await context(options.paths, spec.name, options.registry);
-  const result = await requestJson({ configuration, registry, path: `/-/package/${spec.escapedName}/trust`, method: "POST", body: JSON.stringify([options.configuration]), allowArray: true, fetch: options.fetch, signal: options.signal, otp: options.otp });
-  const values = Array.isArray(result) ? result : [result];
-  return values.map((value) => {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RegistryError("Registry returned an invalid trust configuration");
-    return value as Record<string, unknown>;
-  });
+  return trustConfigurations(await requestJson({ configuration, registry, path: `/-/package/${spec.escapedName}/trust`, method: "POST", body: JSON.stringify([options.configuration]), allowArray: true, fetch: options.fetch, signal: options.signal, otp: options.otp }));
 }
 
 export async function pingRegistry(options: { readonly paths: BnpmPaths; readonly registry?: URL; readonly fetch?: typeof globalThis.fetch; readonly signal?: AbortSignal }): Promise<{ readonly registry: string; readonly details: Readonly<Record<string, unknown>> }> {

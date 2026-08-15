@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
-import { defaultConfig, recentReleaseHours, type BnpmConfig, type RecentReleaseHours, type TrustedPackageApproval } from "./types.js";
+import { defaultConfig, recentReleaseHours, type RecentReleaseHours, type TrustedPackageApproval } from "./types.js";
 import type { InteractiveMode } from "./interactive.js";
 
 export class ConfigError extends Error {

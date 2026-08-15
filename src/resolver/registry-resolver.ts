@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { hashLocalPackage } from "../cache/store.js";
 import { parseManifest } from "../project/manifest.js";
 import type { PackageDocument, PackageVersionManifest } from "../registry/types.js";
-import type { Requirement, ResolutionGraph, ResolvedPackage, Resolver } from "./types.js";
+import type { Requirement, ResolutionGraph, Resolver } from "./types.js";
 
 export interface PackageMetadataProvider {
   packageDocument(name: string, signal?: AbortSignal): Promise<PackageDocument>;

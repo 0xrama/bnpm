@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { RegistryError } from "./client.js";
 import { loadRegistryConfiguration } from "./configuration.js";
 import type { BnpmPaths } from "../config/paths.js";
+import { readBoundedBody } from "./response.js";
 
 const maxResponseBytes = 1024 * 1024;
 
@@ -13,17 +14,11 @@ function requestSignal(signal?: AbortSignal): AbortSignal {
 }
 
 async function json(response: Response): Promise<Record<string, unknown>> {
-  if (!response.body) throw new RegistryError("Registry returned an empty account response", response.status);
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const value of response.body) {
-    const chunk = Buffer.from(value);
-    size += chunk.length;
-    if (size > maxResponseBytes) throw new RegistryError("Registry account response exceeded the size limit", response.status);
-    chunks.push(chunk);
-  }
+  const body = await readBoundedBody(response, maxResponseBytes);
+  if (body.kind === "empty") throw new RegistryError("Registry returned an empty account response", response.status);
+  if (body.kind === "too-large") throw new RegistryError("Registry account response exceeded the size limit", response.status);
   try {
-    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const value = JSON.parse(body.bytes.toString("utf8"));
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("not an object");
     return value as Record<string, unknown>;
   } catch {
