@@ -5,17 +5,13 @@ import { fetchBulkAdvisories, type RegistryAdvisory } from "../registry/audit.js
 import { analyzePackage, type AnalyzedPackage } from "./analyzer.js";
 import { loadRegistryConfiguration, RegistryConfiguration } from "../registry/configuration.js";
 import type { ResolutionGraph } from "../resolver/types.js";
+import { forEachConcurrent } from "../core/concurrency.js";
 
 export interface AuditResult {
   readonly analyzedAt: string;
   readonly packages: ReadonlyMap<string, AnalyzedPackage>;
   readonly advisories: readonly RegistryAdvisory[];
   readonly graph: ResolutionGraph;
-}
-
-async function forEachConcurrent<T>(values: readonly T[], concurrency: number, worker: (value: T) => Promise<void>): Promise<void> {
-  let index = 0; const next = async (): Promise<void> => { while (true) { const value = values[index++]; if (value === undefined) return; await worker(value); } };
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => next()));
 }
 
 export async function auditProject(options: { readonly paths: BnpmPaths; readonly registry?: URL; readonly registryConfiguration?: RegistryConfiguration; readonly fetch?: typeof globalThis.fetch; readonly signal?: AbortSignal; readonly now?: Date }): Promise<AuditResult> {

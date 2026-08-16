@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { after, beforeEach, test } from "node:test";
+import { after, test } from "node:test";
 import { spawn } from "node:child_process";
 import { parseInvocation } from "../src/core/cli-parser.js";
 import { sanitizeText } from "../src/core/output.js";

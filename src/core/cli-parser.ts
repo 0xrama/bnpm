@@ -800,7 +800,6 @@ export function parseInvocation(args: readonly string[], invokedAsBnpmx = false)
     : first === "adduser" ? { ...parsed.options, accountCreate: true } : parsed.options;
   if (name === "edit" && options.json) throw new UsageError("edit is interactive and cannot use --json");
   const operands = name === "stage" || name === "trust" || name === "token" ? [rest[1] ?? "", ...parsed.operands] : parsed.operands;
-  const hasAuthoringOptions = options.dryRun || options.packDestination !== undefined || options.tag !== undefined || options.access !== undefined || options.otp !== undefined || options.provenance === true || options.provenanceFile !== undefined;
   const hasNonDryAuthoringOptions = options.packDestination !== undefined || options.tag !== undefined || options.access !== undefined || options.otp !== undefined || options.provenance === true || options.provenanceFile !== undefined;
   if (!["pack", "publish", "stage", "unpublish", "access", "owner", "token", "star", "unstar", "org", "team", "profile", "trust", "login", "deprecate", "dist-tag", "diff"].includes(name) && hasNonDryAuthoringOptions) throw new UsageError("package authoring options are not valid for this command");
   if (options.dryRun && !["install", "add", "remove", "update", "prune", "dedupe", "pack", "publish", "stage", "unpublish", "deprecate", "trust", "install-scripts", "audit"].includes(name)) throw new UsageError("--dry-run is not valid for this command");

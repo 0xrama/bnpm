@@ -1,4 +1,5 @@
 import npa from "npm-package-arg";
+import { readBoundedBody } from "../registry/response.js";
 
 const maxResponseBytes = 1024 * 1024;
 
@@ -8,17 +9,10 @@ function requestSignal(signal?: AbortSignal): AbortSignal {
 }
 
 async function boundedJson(response: Response): Promise<Record<string, unknown> | undefined> {
-  if (!response.body) return undefined;
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const value of response.body) {
-    const chunk = Buffer.from(value);
-    size += chunk.length;
-    if (size > maxResponseBytes) return undefined;
-    chunks.push(chunk);
-  }
+  const body = await readBoundedBody(response, maxResponseBytes);
+  if (body.kind !== "ok") return undefined;
   try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const parsed = JSON.parse(body.bytes.toString("utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
   } catch {
     return undefined;

@@ -1,9 +1,9 @@
 import { ExitCode, type ExitCode as ExitCodeValue } from "../core/exit-codes.js";
 import type { CommandOptions } from "../core/cli-parser.js";
 import type { Output } from "../core/output.js";
-import { installProject, type InstallProgress } from "../installer/install.js";
+import { installProject, type InstallProgress, type InstallProjectOptions } from "../installer/install.js";
 import { addDependencies, removeDependencies, updateDependencies } from "../installer/mutations.js";
-import { execInstalled, exploreInstalled, ProcessCommandError, projectScriptNames, runProjectInstallLifecycle, runProjectScript, runProjectScriptIfPresent, runProjectScriptLifecycle } from "./process.js";
+import { execInstalled, exploreInstalled, ProcessCommandError, projectScriptNames, runProjectInstallLifecycle, runProjectScriptIfPresent, runProjectScriptLifecycle } from "./process.js";
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -1044,47 +1044,28 @@ export async function runCommand(name: CommandName, context: CommandContext): Pr
       for (const cwd of roots) {
       const securityEvents: { readonly message: string; readonly evidence: unknown }[] = [];
       const collectSecurityEvidence = (message: string, evidence: unknown): void => { securityEvents.push({ message, evidence }); };
-      const reportProgress = installProgressReporter(context);
+      const installOptions = {
+        signal: context.signal,
+        ...selectedRegistry(context.options),
+        prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
+        onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
+        onSecurityEvidence: collectSecurityEvidence,
+        onProgress: installProgressReporter(context),
+      } satisfies Omit<InstallProjectOptions, "cwd" | "specifications" | "requirements" | "commandOptions">;
       const result = name === "add" || (name === "install" && context.args.length > 0)
-        ? await addDependencies(cwd, context.args, context.options, {
-            signal: context.signal,
-            ...selectedRegistry(context.options),
-            prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
-            onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
-            onSecurityEvidence: collectSecurityEvidence,
-            onProgress: reportProgress,
-          })
+        ? await addDependencies(cwd, context.args, context.options, installOptions)
         : name === "remove"
-          ? await removeDependencies(cwd, context.args, context.options, {
-              signal: context.signal,
-              ...selectedRegistry(context.options),
-              prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
-              onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
-              onSecurityEvidence: collectSecurityEvidence,
-              onProgress: reportProgress,
-            })
+          ? await removeDependencies(cwd, context.args, context.options, installOptions)
           : name === "update"
-            ? await updateDependencies(cwd, context.args, context.options, {
-                signal: context.signal,
-                ...selectedRegistry(context.options),
-                prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
-                onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
-                onSecurityEvidence: collectSecurityEvidence,
-                onProgress: reportProgress,
-              })
-          : await installProject({
-              cwd,
-              ...selectedRegistry(context.options),
-              specifications: context.args,
-              commandOptions: context.options,
-              signal: context.signal,
-              prompts: commandInstallPrompts(context.options, () => context.output.finishProgress?.()),
-              onChildOutput: (stream, text, attribution) => context.output.childOutput(stream, text, attribution),
-              onSecurityEvidence: collectSecurityEvidence,
-              onProgress: reportProgress,
-              ...((name === "prune" || name === "dedupe") ? { forceRelink: true } : {}),
-              ...(name === "dedupe" ? { forceResolution: true } : {}),
-            });
+            ? await updateDependencies(cwd, context.args, context.options, installOptions)
+            : await installProject({
+                cwd,
+                specifications: context.args,
+                commandOptions: context.options,
+                ...installOptions,
+                ...((name === "prune" || name === "dedupe") ? { forceRelink: true } : {}),
+                ...(name === "dedupe" ? { forceResolution: true } : {}),
+              });
       if (context.options.json || context.options.details) for (const event of securityEvents.sort((left, right) => left.message.localeCompare(right.message))) context.output.info(event.message, event.evidence);
       if (!context.options.json) {
         const findings = [...result.analyses.values()].flatMap((analyzed) => analyzed.analysis.findings);

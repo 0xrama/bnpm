@@ -6,7 +6,6 @@ import { after, test } from "node:test";
 import {
   ConfigError,
   composeConfig,
-  loadConfigFile,
   parseConfig,
   selectRecencyConfiguration,
 } from "../src/config/configuration.js";

@@ -3,6 +3,7 @@ import { chmod, copyFile, mkdir, readFile, readlink, readdir, rename, rm, stat, 
 import { constants } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ResolutionGraph } from "../resolver/types.js";
+import { forEachConcurrent } from "../core/concurrency.js";
 
 export class LinkerError extends Error {
   constructor(message: string) {
@@ -47,12 +48,6 @@ async function cloneStoreTree(source: string, target: string): Promise<void> {
 
 function packagePath(instanceRoot: string, name: string): string {
   return join(instanceRoot, "node_modules", ...name.split("/"));
-}
-
-async function forEachConcurrent<T>(values: readonly T[], concurrency: number, worker: (value: T) => Promise<void>): Promise<void> {
-  let index = 0;
-  const next = async (): Promise<void> => { while (true) { const value = values[index++]; if (value === undefined) return; await worker(value); } };
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => next()));
 }
 
 async function linkDirectory(target: string, path: string): Promise<void> {

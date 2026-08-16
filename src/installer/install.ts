@@ -2,6 +2,7 @@ import npa from "npm-package-arg";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import type { CommandOptions } from "../core/cli-parser.js";
+import { forEachConcurrent } from "../core/concurrency.js";
 import { downloadToQuarantine } from "../cache/quarantine.js";
 import { extractPackageArchive } from "../cache/archive.js";
 import { hashLocalPackage, promoteToStore, storePath, verifyStoreEntry } from "../cache/store.js";
@@ -79,20 +80,6 @@ export interface InstallProjectResult {
   readonly skippedLifecyclePackages: readonly string[];
   readonly analyses: ReadonlyMap<string, AnalyzedPackage>;
   readonly policyDecisions: readonly PackagePolicyDecision[];
-}
-
-async function forEachConcurrent<T>(values: readonly T[], concurrency: number, worker: (value: T) => Promise<void>): Promise<void> {
-  let index = 0;
-  const next = async (): Promise<void> => {
-    while (true) {
-      const current = index;
-      index += 1;
-      const value = values[current];
-      if (value === undefined) return;
-      await worker(value);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => next()));
 }
 
 function requirementKeys(requirements: readonly Requirement[]): readonly string[] {

@@ -185,15 +185,6 @@ function pseudoArguments(rest: string): { readonly name: string; readonly body?:
   throw new QueryError(`unclosed :${name}()`);
 }
 
-function descendants(node: QueryNode, context: MatchContext): readonly QueryNode[] {
-  const found: QueryNode[] = []; const seen = new Set<string>(); const pending = [...node.dependencyIds];
-  while (pending.length > 0) {
-    const id = pending.shift(); if (!id || seen.has(id)) continue; seen.add(id);
-    const value = context.nodes.get(id); if (!value) continue; found.push(value); pending.push(...value.dependencyIds);
-  }
-  return found;
-}
-
 function compound(selector: string): CompoundSelector {
   let rest = selector.trim();
   if (!rest) throw new QueryError("empty compound selector");
